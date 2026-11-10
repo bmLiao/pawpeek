@@ -1,0 +1,32 @@
+[package]
+name = "pawpeek"
+version = "1.2.0"
+edition = "2021"
+
+[dependencies]
+wry = "0.50"
+tao = "0.32"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rust-embed = "8"
+base64 = "0.22"
+ureq = "3"
+# 匯入自訂外觀用的系統選檔 / 確認視窗
+rfd = "0.15"
+pollster = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# 與 wry 0.50 使用的版本一致，用來監聽 WebView2 畫面程式崩潰
+webview2-com = "0.36"
+# 讓匯入外觀的系統對話框以桌寵視窗為擁有者（與 tao / rfd 相同版本）
+raw-window-handle = "0.6"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

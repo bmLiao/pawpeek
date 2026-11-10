@@ -1,0 +1,14 @@
+{
+  "name": "pawpeek",
+  "description": "PawPeek — Claude Code 桌寵插件（fork 自 Jedeiah/agent-critter）",
+  "owner": {
+    "name": "BM.Liao"
+  },
+  "plugins": [
+    {
+      "name": "pawpeek",
+      "description": "會探頭看你 AI 在忙什麼的桌寵：即時反映 Claude Code 工作狀態，對話泡泡、自訂文字與外觀。",
+      "source": "./"
+    }
+  ]
+}
