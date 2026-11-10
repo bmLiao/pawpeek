@@ -25,6 +25,8 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run tests
+        run: cargo test
       - name: Build release
         run: cargo build --release
       - name: Upload raw binary
@@ -38,6 +40,7 @@ jobs:
           cp -r .claude-plugin tmp/
           cp .claude-plugin/marketplace.json tmp/
           cp -r hooks tmp/
+          cp -r commands tmp/
           cp -r assets tmp/
           cp PLUGIN.md tmp/
           cp README.md tmp/
@@ -64,6 +67,8 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run tests
+        run: cargo test
       - name: Build release
         run: cargo build --release
       - name: Upload raw binary
@@ -79,6 +84,7 @@ jobs:
           Copy-Item -Recurse .claude-plugin tmp\.claude-plugin
           Copy-Item .claude-plugin\marketplace.json tmp\marketplace.json
           Copy-Item -Recurse hooks tmp\hooks
+          Copy-Item -Recurse commands tmp\commands
           Copy-Item -Recurse assets tmp\assets
           Copy-Item PLUGIN.md tmp\
           Copy-Item README.md tmp\

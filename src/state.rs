@@ -1,4 +1,9 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// 工作中 / 等待確認 / 工具出錯超過這段時間沒有任何事件，視為對話已失聯（例如終端機被直接關掉、
+/// 沒送出 SessionEnd），自動回到閒置，避免寵物永遠卡在該狀態。只重置狀態、不移除對話。
+pub const STALE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LightState {
@@ -34,6 +39,7 @@ impl LightState {
 #[derive(Debug)]
 struct Session {
     state: LightState,
+    last_event: Instant,
 }
 
 #[derive(Debug)]
@@ -75,7 +81,7 @@ impl StateMachine {
                     self.session_counter += 1;
                     self.sessions.insert(
                         session_id.to_string(),
-                        Session { state: LightState::Idle },
+                        Session { state: LightState::Idle, last_event: Instant::now() },
                     );
                 }
                 // is_new=false：running 比 session_start 先到，
@@ -98,6 +104,7 @@ impl StateMachine {
 
             "stop" => {
                 if let Some(session) = self.sessions.get_mut(session_id) {
+                    session.last_event = Instant::now();
                     if !matches!(session.state, LightState::ErrorFinal) {
                         session.state = LightState::Idle;
                     }
@@ -126,8 +133,30 @@ impl StateMachine {
         }
         let session = self.sessions
             .entry(session_id.to_string())
-            .or_insert(Session { state: LightState::Idle });
+            .or_insert(Session { state: LightState::Idle, last_event: Instant::now() });
         session.state = state;
+        session.last_event = Instant::now();
+    }
+
+    /// 把超過 `timeout` 沒有事件、仍停在工作中 / 等待確認 / 工具出錯的對話重置為閒置。
+    /// 嚴重錯誤刻意保留（要等使用者下一次操作才清掉），閒置對話也不移除。
+    /// 回傳是否有對話被重置。
+    pub fn expire_stale(&mut self, now: Instant, timeout: Duration) -> bool {
+        let mut changed = false;
+        for session in self.sessions.values_mut() {
+            let active = matches!(
+                session.state,
+                LightState::Running | LightState::NeedConfirm | LightState::ToolError
+            );
+            if active && now.saturating_duration_since(session.last_event) >= timeout {
+                session.state = LightState::Idle;
+                changed = true;
+            }
+        }
+        if changed {
+            self.update_current_state();
+        }
+        changed
     }
 
     fn update_current_state(&mut self) {
@@ -219,6 +248,47 @@ mod tests {
         sm.handle_event("s1", "error_final");
         sm.handle_event("s1", "stop");
         assert_eq!(sm.current_state(), LightState::ErrorFinal);
+    }
+
+    #[test]
+    fn test_expire_stale_resets_active_sessions_only() {
+        let mut sm = StateMachine::new();
+        sm.handle_event("run", "running");
+        sm.handle_event("ask", "need_confirm");
+        sm.handle_event("err", "error_final");
+        sm.handle_event("idle", "session_start");
+        let later = Instant::now() + STALE_TIMEOUT;
+
+        assert!(sm.expire_stale(later, STALE_TIMEOUT));
+        // 嚴重錯誤保留，其餘回到閒置
+        assert_eq!(sm.current_state(), LightState::ErrorFinal);
+        sm.handle_event("err", "running");
+        sm.handle_event("err", "stop");
+        assert_eq!(sm.current_state(), LightState::Idle);
+        // 對話不會被移除
+        assert_eq!(sm.session_count(), 4);
+        assert!(!sm.should_exit());
+    }
+
+    #[test]
+    fn test_expire_stale_keeps_recent_sessions() {
+        let mut sm = StateMachine::new();
+        sm.handle_event("s1", "running");
+        let almost = Instant::now() + STALE_TIMEOUT - Duration::from_secs(60);
+        assert!(!sm.expire_stale(almost, STALE_TIMEOUT));
+        assert_eq!(sm.current_state(), LightState::Running);
+    }
+
+    #[test]
+    fn test_new_event_refreshes_stale_timer() {
+        let mut sm = StateMachine::new();
+        sm.handle_event("s1", "running");
+        std::thread::sleep(Duration::from_millis(20));
+        let checkpoint = Instant::now();
+        sm.handle_event("s1", "running");
+        // 以最後一次事件為準：從 checkpoint 起算還不到 timeout
+        assert!(!sm.expire_stale(checkpoint + STALE_TIMEOUT - Duration::from_millis(10), STALE_TIMEOUT));
+        assert_eq!(sm.current_state(), LightState::Running);
     }
 
     #[test]

@@ -100,3 +100,67 @@ fn map_legacy_event(event: &str) -> &'static str {
         _ => "idle",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(json: &str) -> &'static str {
+        let payload: HookPayload = serde_json::from_str(json).expect("valid payload");
+        map_hook_event(&payload)
+    }
+
+    #[test]
+    fn session_lifecycle() {
+        assert_eq!(map(r#"{"hook_event_name":"SessionStart","source":"startup"}"#), "session_start");
+        assert_eq!(map(r#"{"hook_event_name":"SessionStart","source":"compact"}"#), "session_start");
+        assert_eq!(map(r#"{"hook_event_name":"SessionEnd"}"#), "session_end");
+        assert_eq!(map(r#"{"hook_event_name":"Stop"}"#), "stop");
+    }
+
+    #[test]
+    fn working_events_map_to_running() {
+        for name in ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact"] {
+            let json = format!(r#"{{"hook_event_name":"{name}"}}"#);
+            assert_eq!(map(&json), "running", "{name}");
+        }
+    }
+
+    #[test]
+    fn permission_and_notifications() {
+        assert_eq!(map(r#"{"hook_event_name":"PermissionRequest"}"#), "need_confirm");
+        assert_eq!(map(r#"{"hook_event_name":"Notification","notification_type":"permission_prompt"}"#), "need_confirm");
+        assert_eq!(map(r#"{"hook_event_name":"Notification","notification_type":"elicitation_dialog"}"#), "need_confirm");
+        // idle_prompt（閒置約 60 秒）會讓寵物回到閒置，也是 Esc 中斷後的恢復途徑
+        assert_eq!(map(r#"{"hook_event_name":"Notification","notification_type":"idle_prompt"}"#), "idle");
+    }
+
+    #[test]
+    fn tool_failure_keeps_running_unless_interrupted() {
+        assert_eq!(map(r#"{"hook_event_name":"PostToolUseFailure"}"#), "running");
+        assert_eq!(map(r#"{"hook_event_name":"PostToolUseFailure","is_interrupt":false}"#), "running");
+        assert_eq!(map(r#"{"hook_event_name":"PostToolUseFailure","is_interrupt":true}"#), "stop");
+    }
+
+    #[test]
+    fn stop_failure_severity() {
+        assert_eq!(map(r#"{"hook_event_name":"StopFailure","error":"rate_limit"}"#), "tool_error");
+        assert_eq!(map(r#"{"hook_event_name":"StopFailure","error":"server_error"}"#), "tool_error");
+        assert_eq!(map(r#"{"hook_event_name":"StopFailure","error":"authentication_failed"}"#), "error_final");
+        assert_eq!(map(r#"{"hook_event_name":"StopFailure","error":"billing_error"}"#), "error_final");
+        assert_eq!(map(r#"{"hook_event_name":"StopFailure","error":"something_new"}"#), "tool_error");
+        assert_eq!(map(r#"{"hook_event_name":"StopFailure"}"#), "tool_error");
+    }
+
+    #[test]
+    fn legacy_event_field_takes_precedence() {
+        assert_eq!(map(r#"{"event":"need_confirm","hook_event_name":"Stop"}"#), "need_confirm");
+        assert_eq!(map(r#"{"event":"bogus"}"#), "idle");
+    }
+
+    #[test]
+    fn unknown_or_missing_event_is_idle() {
+        assert_eq!(map(r#"{"hook_event_name":"SomeFutureHook"}"#), "idle");
+        assert_eq!(map(r#"{}"#), "idle");
+    }
+}

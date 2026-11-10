@@ -406,7 +406,11 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
             std::thread::sleep(std::time::Duration::from_secs(1));
             tick += 1;
             let (cur, count) = {
-                let s = state_poll.lock().unwrap_or_else(|e| e.into_inner());
+                let mut s = state_poll.lock().unwrap_or_else(|e| e.into_inner());
+                // 每分鐘檢查一次失聯的對話（終端機被直接關掉時不會送 SessionEnd）
+                if tick % 60 == 0 {
+                    s.expire_stale(std::time::Instant::now(), crate::state::STALE_TIMEOUT);
+                }
                 (s.current_state(), s.session_count())
             };
             let _ = proxy_poll.send_event(UiCommand::SetState { state: cur, duration_ms: None });
