@@ -19,6 +19,17 @@
 本機安裝是把 `dist\pawpeek-plugin-windows` 加成 directory marketplace，
 Claude Code 會把它複製到 `~/.claude/plugins/cache/pawpeek/pawpeek/<版本>/`。
 
+## repo 的 bin/ 結構（從 GitHub 安裝用）
+
+| 檔案 | 說明 |
+|------|------|
+| `bin/pawpeek` | sh 啟動器，依 `uname` 轉交給下面兩個執行檔；hooks 與斜線指令都呼叫它 |
+| `bin/pawpeek.exe` | Windows 執行檔（CI 編譯後自動 commit） |
+| `bin/pawpeek-macos` | macOS arm64 執行檔（CI 編譯後自動 commit） |
+
+注意：在 Git Bash 裡 `bin/pawpeek` 會被當成 `bin/pawpeek.exe`，用 shell 寫入 `bin/pawpeek` 會覆蓋掉 exe，要改啟動器請用編輯器。
+`dist\` 打包出來的資料夾只放單一平台執行檔，不需要啟動器。
+
 ## 更新已安裝的插件
 
 改完程式碼後依序執行：

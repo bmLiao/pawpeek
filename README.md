@@ -29,16 +29,47 @@
 | 通訊埠 | 改用 47390（避開常被代理軟體佔用的 7890） |
 | 設定位置 | 文件資料夾下 `.pawpeek/`；舊的 `.agent-critter/` 會自動搬過來 |
 
-## 安裝（本機）
+## 安裝
 
-需求：Windows 10/11（WebView2）、[Rust](https://rustup.rs)、Claude Code。
+需求：Windows 10/11（WebView2 Runtime，Win11 內建）或 macOS（Apple Silicon），以及 [Claude Code](https://docs.claude.com/en/docs/claude-code)。
 
-```powershell
-# 編譯並打包到 dist\pawpeek-plugin-windows
-.\scripts\build-plugin.bat
+### 方式一：直接從 GitHub 安裝（建議，免 clone、免編譯）
+
+repo 本身就是 Claude Code marketplace，`bin/` 內含 CI 編好的執行檔。在 Claude Code 對話中輸入：
+
+```
+/plugin marketplace add bmLiao/pawpeek
+/plugin install pawpeek@pawpeek
+/reload-plugins
 ```
 
-在 Claude Code 裡：
+或在終端機用 CLI：
+
+```powershell
+claude plugin marketplace add bmLiao/pawpeek
+claude plugin install pawpeek@pawpeek
+```
+
+也可以直接交給 Claude：在 Claude Code 裡說「幫我安裝 https://github.com/bmLiao/pawpeek 這個插件」，它會執行上面的指令。
+
+更新到最新版：
+
+```
+/plugin marketplace update pawpeek
+/plugin update pawpeek@pawpeek
+```
+
+### 方式二：從原始碼編譯（開發用）
+
+需要另外安裝 [Rust](https://rustup.rs) 與 Git。
+
+```powershell
+git clone https://github.com/bmLiao/pawpeek.git
+cd pawpeek
+
+# 編譯並打包到 dist\pawpeek-plugin-windows（此資料夾就是本機 marketplace）
+.\scripts\build-plugin.bat
+```
 
 ```
 /plugin marketplace add C:\path\to\pawpeek\dist\pawpeek-plugin-windows
@@ -46,7 +77,15 @@
 /reload-plugins
 ```
 
-開新的對話時桌寵會自動出現。改完程式碼後如何更新已安裝的插件，請見 [PLUGIN.md](PLUGIN.md)。
+改完程式碼後如何更新已安裝的插件，請見 [PLUGIN.md](PLUGIN.md)。
+
+> 兩種方式的 marketplace 名稱都是 `pawpeek`，切換時先 `/plugin marketplace remove pawpeek` 再重新加入。
+> 若 shell 設了 `CLAUDE_CONFIG_DIR`，插件會裝到該設定目錄，而不是 `~/.claude`。
+
+### 確認
+
+開一個新的 Claude Code 對話，狀態列出現「桌寵小精靈上線中...」，接著桌寵出現在桌面上即安裝成功。
+也可以用 `/plugin` 查看 `pawpeek@pawpeek` 是否已啟用。
 
 ## 使用
 

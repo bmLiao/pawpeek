@@ -112,9 +112,10 @@ jobs:
       - name: Commit binaries to bin/
         run: |
           mkdir -p bin
-          cp /tmp/macos/pawpeek bin/pawpeek
+          # bin/pawpeek 是依作業系統轉交的啟動器（已在 repo 中），不可覆蓋
+          cp /tmp/macos/pawpeek bin/pawpeek-macos
           cp /tmp/windows/pawpeek.exe bin/pawpeek.exe
-          chmod +x bin/pawpeek
+          chmod +x bin/pawpeek bin/pawpeek-macos
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add -f bin/

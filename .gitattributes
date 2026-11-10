@@ -1,0 +1,3 @@
+bin/pawpeek text eol=lf
+bin/pawpeek-macos binary
+bin/*.exe binary
