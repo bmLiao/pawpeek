@@ -1,5 +1,7 @@
 # PawPeek — 開發與更新指南
 
+> 🤖 **AI 開發專案**：程式碼與文件由 AI（Anthropic Claude，透過 Claude Code）撰寫，想法與需求來自 BM.Liao。
+>
 > PawPeek fork 自 [Jedeiah/agent-critter](https://github.com/Jedeiah/agent-critter)（MIT）。使用說明見 [README.md](README.md)。
 
 ## 第一次安裝

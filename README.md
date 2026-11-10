@@ -2,6 +2,9 @@
 
 會探頭看你 AI 在忙什麼的桌寵。PawPeek 是 Claude Code 插件，用一隻透明背景、浮在桌面上的小寵物，即時反映 Claude Code 的工作狀態：閒置、工作中、等你確認、出錯。
 
+> **🤖 AI 開發專案**：PawPeek 的程式碼、文件與修改內容由 AI（Anthropic Claude，透過 Claude Code）撰寫完成。
+> 想法、需求與測試回饋來自 BM.Liao，實作則是 AI 完成的。使用前請自行評估；如有問題歡迎回報。
+
 > **原出處**：本專案 fork 自 [Jedeiah/agent-critter](https://github.com/Jedeiah/agent-critter)（MIT License），
 > 感謝原作者 chj 與 Agent Critter Contributors。PawPeek 在其基礎上改名並大幅修改，
 > 原始版權聲明保留於 [LICENSE](LICENSE)。
@@ -117,6 +120,15 @@ Claude Code hooks ──TCP 127.0.0.1:47390──▶ 狀態機（多對話合併
 - [Petdex](https://github.com/crafter-station/petdex) — 精靈格式與社群精靈
 - [wry](https://github.com/tauri-apps/wry)、[tao](https://github.com/tauri-apps/tao) — Rust WebView 與視窗
 
+## 開發方式
+
+| 角色 | 負責 |
+|------|------|
+| BM.Liao | 想法、功能需求、使用測試與回饋 |
+| AI（Anthropic Claude，Claude Code） | 程式碼實作、除錯、文件撰寫 |
+
+git commit 中的 `Co-Authored-By: Claude` 標示了 AI 參與的部分。
+
 ## 授權
 
-[MIT](LICENSE)。保留原專案版權聲明，PawPeek 的修改部分版權屬 BM.Liao。
+[MIT](LICENSE)。保留原專案版權聲明；PawPeek 的修改由 AI 依 BM.Liao 的需求完成。

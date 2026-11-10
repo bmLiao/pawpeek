@@ -3,7 +3,7 @@
   "name": "pawpeek",
   "displayName": "PawPeek",
   "version": "1.2.0",
-  "description": "會探頭看你 AI 在忙什麼的桌寵：即時反映 Claude Code 工作狀態，對話泡泡、自訂文字與外觀（相容 Petdex 精靈）。Fork 自 Jedeiah/agent-critter。",
+  "description": "會探頭看你 AI 在忙什麼的桌寵：即時反映 Claude Code 工作狀態，對話泡泡、自訂文字與外觀（相容 Petdex 精靈）。AI（Claude）開發，fork 自 Jedeiah/agent-critter。",
   "author": {
     "name": "BM.Liao",
     "email": "cit49836085@gmail.com"
