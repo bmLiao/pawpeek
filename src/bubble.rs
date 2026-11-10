@@ -100,20 +100,24 @@ pub const CSS: &str = r#"
   #pet-bubble .tail { position: absolute; left: 50%; width: 0; height: 0; border: 7px solid transparent; transform: translateX(-50%); }
   .stage:not(.below) #pet-bubble .tail { bottom: -7px; border-top-color: rgba(22, 24, 38, 0.92); border-bottom: 0; }
   .stage.below #pet-bubble .tail { top: -7px; border-bottom-color: rgba(22, 24, 38, 0.92); border-top: 0; }
+  /* 掃光：背景寬 300%、不重複，亮帶在正中間（寬約文字的 30%）。
+     position 100% → 0% 時背景左緣從 -200% 移到 0，亮帶中心從文字左外側 -50% 掃到右外側 150%；
+     兩端都完全在文字外，每輪接縫看不到跳動。（原本 220% 且會平鋪，移動距離不是圖寬整數倍，隔輪會從中間重置） */
   #pet-bubble .typed.shimmer {
-    background: linear-gradient(100deg, #fff 40%, rgba(255,255,255,0.45) 50%, #fff 60%);
-    background-size: 220% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+    background: linear-gradient(100deg, #fff 45%, rgba(255,255,255,0.45) 50%, #fff 55%);
+    background-size: 300% 100%; background-repeat: no-repeat;
+    -webkit-background-clip: text; background-clip: text; color: transparent;
     animation: bubble-shimmer 2.5s linear infinite;
   }
-  @keyframes bubble-shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+  @keyframes bubble-shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
 "#;
 
 /// 泡泡邏輯。需要頁面先定義 `pet`、`stageEl`、`window.__baseSize`（{w,h} 寵物視窗邏輯大小）。
-/// 對外介面：`setBubble(text, ms, persist)`、`showTransientBubble(text, ms)`、
+/// 對外介面：`speech.enter(base, entry)`、`speech.say(text, ms)`、`speech.special(text, ms, untilChange)`、
 /// `setBubbleSide(below)`（主程式通知泡泡改到寵物下方）、`syncWindowSize()`（縮放後重算視窗大小）
 pub const JS: &str = r#"
 (function() {
-  var ERASE_MS = 20, TYPE_MS = 45, DOT_MS = 400, DOTS = ['.', '..', '...'];
+  var FADE_MS = 200, TYPE_MS = 45, DOT_MS = 400, DOTS = ['.', '..', '...']; // FADE_MS 對應 CSS 的 opacity 0.2s
   var el = document.createElement('div');
   el.id = 'pet-bubble';
   el.innerHTML = '<div class="cell"><span class="ghost"></span><span class="typed"></span></div><div class="tail"></div>';
@@ -163,27 +167,40 @@ pub const JS: &str = r#"
       }
     }, TYPE_MS);
   }
-  function show(text) {
+  // instant：直接顯示完整文字（回到持久泡泡時用，不再重打一次）
+  // 換句話時舊泡泡先淡出（與消失時一致），再淡入新泡泡打字
+  function show(text, instant) {
     clearTimeout(hideTimer);
     if (text === target && visible) return;
     var wasVisible = visible;
     target = text; visible = true; stop();
-    var cur = wasVisible ? Array.from(typed.textContent) : [];
-    if (!wasVisible) typed.textContent = '';
+    if (wasVisible) {
+      el.classList.remove('show');
+      hideTimer = setTimeout(function() { render(text, instant); }, FADE_MS);
+      return;
+    }
+    render(text, instant);
+  }
+  function render(text, instant) {
+    typed.textContent = '';
     ghost.textContent = splitDots(text).dots ? splitDots(text).base + '...' : text;
     el.style.display = 'block';
     el.classList.toggle('capsule', el.getBoundingClientRect().height <= 34 * (window.__petScale || 1));
     window.syncWindowSize();
     requestAnimationFrame(function() { el.classList.add('show'); });
-    if (!cur.length) return typeIn(text);
-    // 先刪掉舊字再打新字
-    timer = setInterval(function() {
-      cur.pop(); typed.textContent = cur.join('');
-      if (!cur.length) { clearInterval(timer); timer = null; typeIn(text); }
-    }, ERASE_MS);
+    if (!instant) return typeIn(text);
+    var e = splitDots(text);
+    typed.textContent = e.base;
+    if (e.dots) {
+      var f = 0; typed.textContent = e.base + DOTS[0];
+      timer = setInterval(function() { f = (f + 1) % DOTS.length; typed.textContent = e.base + DOTS[f]; }, DOT_MS);
+    } else {
+      typed.classList.add('shimmer');
+    }
   }
   function hide() {
     if (!visible) return;
+    clearTimeout(hideTimer); // 取消淡出後尚未換上的新泡泡
     visible = false; target = ''; stop();
     el.classList.remove('show');
     hideTimer = setTimeout(function() {
@@ -191,24 +208,46 @@ pub const JS: &str = r#"
     }, 220);
   }
 
-  var persistent = '', backTimer = null;
-  function restoreLater(ms) {
-    var saved = persistent;
-    backTimer = setTimeout(function() { if (saved) show(saved); else hide(); }, ms);
+  // 說話分三層（高 → 低），規格見 docs/BEHAVIOR.md §2：
+  //   特殊（打招呼、告別、縮放、外觀提示、更新提醒）：只顯示一次，期間其他台詞都不顯示；
+  //     until_change 的（更新提醒）沒有時限，狀態改變時結束
+  //   暫時（進入狀態那一句、自言自語、單擊、雙擊）：顯示幾秒後回到持久台詞或收起
+  //   持久（工作中等狀態的台詞、拖曳台詞）：一直顯示到狀態改變
+  var base = '', sp = null, tempTimer = null;
+  function settle() {
+    if (base) show(base, true); else hide();
   }
-  window.setBubble = function(text, ms, persist) {
-    clearTimeout(backTimer);
-    if (persist) persistent = text || '';
-    if (!text) { persistent = ''; hide(); return; }
-    show(text);
-    if (!persist && ms) restoreLater(ms);
-  };
-  // 用户交互触发的瞬态气泡：自动恢复底层的持久气泡
-  window.showTransientBubble = function(text, ms) {
-    clearTimeout(backTimer);
-    if (!text) return;
-    show(text);
-    restoreLater(ms || 3000);
+  window.speech = {
+    // 進入新狀態：停掉暫時台詞、結束 until_change 的特殊狀態，換上新的持久台詞；
+    // entry 是進入時說的一句暫時台詞（沒有持久台詞的狀態用，例如待機）
+    enter: function(baseText, entry) {
+      clearTimeout(tempTimer); tempTimer = null;
+      if (sp && sp.untilChange) sp = null;
+      base = baseText || '';
+      if (sp) return; // 特殊狀態最高：結束後才顯示持久台詞
+      if (base) return show(base);
+      if (entry) return window.speech.say(entry, 4000);
+      hide();
+    },
+    // 暫時台詞：特殊狀態期間不顯示；回傳是否有顯示
+    say: function(text, ms) {
+      if (!text || sp) return false;
+      clearTimeout(tempTimer);
+      show(text);
+      tempTimer = setTimeout(function() { tempTimer = null; settle(); }, ms || 4000);
+      return true;
+    },
+    // 特殊狀態：ms = 0 表示直到狀態改變（untilChange）
+    special: function(text, ms, untilChange) {
+      if (!text) return;
+      clearTimeout(tempTimer); tempTimer = null;
+      if (sp) clearTimeout(sp.timer);
+      var me = { untilChange: !!untilChange, timer: null };
+      sp = me;
+      show(text);
+      if (ms) me.timer = setTimeout(function() { if (sp === me) { sp = null; settle(); } }, ms);
+    },
+    busy: function() { return !!sp; }
   };
 })();
 "#;

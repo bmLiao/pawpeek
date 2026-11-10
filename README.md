@@ -52,12 +52,23 @@ claude plugin install pawpeek@pawpeek
 
 也可以直接交給 Claude：在 Claude Code 裡說「幫我安裝 https://github.com/bmLiao/pawpeek 這個插件」，它會執行上面的指令。
 
-更新到最新版：
+#### 保持最新版
+
+**建議開啟自動更新**：第三方 marketplace 預設不會自動更新。在 Claude Code 輸入 `/plugin`，
+切到 **Marketplaces** 分頁、選 `pawpeek`，再選 **Enable auto-update**。之後送出每個對話的第一則訊息後，
+Claude Code 會在 10 分鐘內自動抓新版，看到「Plugin updated」提示時執行 `/reload-plugins` 或重開即可。
+
+沒開自動更新也沒關係：桌寵每次啟動會檢查一次，有新版就在第一次待機時冒泡泡提醒你，留到狀態改變（包括拖曳寵物）為止（可在 `.env` 設 `UPDATE_CHECK=off` 關閉）。
+手動更新：
 
 ```
 /plugin marketplace update pawpeek
 /plugin update pawpeek@pawpeek
+/reload-plugins
 ```
+
+> 若環境變數設了 `DISABLE_AUTOUPDATER=1` 或 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`，自動更新會整個停用；
+> 想保留插件自動更新可另外設 `FORCE_AUTOUPDATE_PLUGINS=1`。
 
 ### 方式二：從原始碼編譯（開發用）
 
@@ -91,9 +102,9 @@ cd pawpeek
 
 | 操作 | 效果 |
 |------|------|
-| 單擊寵物 | 隨機互動文字與動作（點頭、點身體各有不同台詞） |
+| 單擊寵物 | 依目前狀態隨機說一句（待機時加一個小動作） |
 | 雙擊寵物 | 顯示目前對話數與狀態 |
-| 拖曳 | 移動位置 |
+| 拖曳 | 移動位置；待機時按住就會說話，並依滑鼠左右方向轉身，放開後動作播完才回待機 |
 | `[` / `]` | 縮小 / 放大（0.5x ~ 1.5x，點一下寵物後可用） |
 
 ### 斜線指令
@@ -114,6 +125,8 @@ cd pawpeek
 | 限流 / 伺服器錯誤 | 檢查（單一工具失敗不算，維持工作中） |
 | 嚴重錯誤（認證、帳單、模型） | 崩潰 |
 
+完整的動作與說話規則見 [docs/BEHAVIOR.md](docs/BEHAVIOR.md)。
+
 多個對話同時進行時取最高優先：`等待確認 > 嚴重錯誤 > 工具出錯 > 工作中 > 閒置`（等待確認代表 Claude 正停下來等你，最需要注意）。
 
 某個對話停在工作中、等待確認或工具出錯超過 30 分鐘沒有任何動靜（例如終端機被直接關掉），會自動回到閒置；嚴重錯誤則保留到你下一次操作。
@@ -125,7 +138,7 @@ cd pawpeek
 | 檔案 | 用途 |
 |------|------|
 | `messages.json` | 所有提示文字；陣列會隨機挑一句，`{count}`、`{name}`、`{state}` 自動帶入 |
-| `.env` | `PET_SKIN=`：Petdex 名稱、本機圖片路徑，或留空用內建寵物 |
+| `.env` | `PET_SKIN=`：Petdex 名稱、本機圖片路徑，或留空用內建寵物；`UPDATE_CHECK=off` 關閉新版提醒 |
 | `pets/<名稱>/spritesheet.webp` | 下載或匯入的外觀 |
 
 視窗位置、縮放比例存在 `~/.pawpeek/data/`。

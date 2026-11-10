@@ -11,6 +11,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Cargo.toml 與 plugin.json 的版本號必須一致：執行檔用前者判斷是否有新版，Claude Code 用後者判斷是否更新
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare versions
+        run: |
+          cargo_v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          plugin_v=$(jq -r .version .claude-plugin/plugin.json)
+          echo "Cargo.toml: $cargo_v / plugin.json: $plugin_v"
+          if [ "$cargo_v" != "$plugin_v" ]; then
+            echo "::error::版本號不一致：Cargo.toml=$cargo_v, plugin.json=$plugin_v"
+            exit 1
+          fi
+
   build-macos:
     runs-on: macos-latest
     steps:
@@ -98,7 +113,7 @@ jobs:
           path: dist/pawpeek-plugin-windows.zip
 
   deploy:
-    needs: [build-macos, build-windows]
+    needs: [check-version, build-macos, build-windows]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     permissions:
@@ -122,13 +137,15 @@ jobs:
           cp /tmp/macos/pawpeek bin/pawpeek-macos
           cp /tmp/windows/pawpeek.exe bin/pawpeek.exe
           chmod +x bin/pawpeek bin/pawpeek-macos
+          # 桌寵的新版檢查讀這個檔：執行檔部署好之後才更新，避免使用者拿到新版本號、舊執行檔
+          grep -m1 '^version' Cargo.toml | cut -d'"' -f2 > bin/VERSION
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add -f bin/
           git diff --staged --quiet || (git commit -m "ci: deploy binaries" && git pull --rebase -X theirs origin main && git push)
 
   release:
-    needs: [build-macos, build-windows]
+    needs: [check-version, build-macos, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:

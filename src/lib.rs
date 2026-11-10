@@ -12,6 +12,7 @@ pub mod hook;
 pub mod server;
 pub mod skin;
 pub mod state;
+pub mod update;
 pub mod webview;
 
 /// 使用者資料夾名稱（放在「文件」與家目錄下）

@@ -26,6 +26,7 @@ Claude Code 會把它複製到 `~/.claude/plugins/cache/pawpeek/pawpeek/<版本>
 | `bin/pawpeek` | sh 啟動器，依 `uname` 轉交給下面兩個執行檔；hooks 與斜線指令都呼叫它 |
 | `bin/pawpeek.exe` | Windows 執行檔（CI 編譯後自動 commit） |
 | `bin/pawpeek-macos` | macOS arm64 執行檔（CI 編譯後自動 commit） |
+| `bin/VERSION` | 已部署執行檔的版本號（CI 自動寫入）；桌寵啟動時讀一次，比自己新就提醒使用者更新 |
 
 注意：在 Git Bash 裡 `bin/pawpeek` 會被當成 `bin/pawpeek.exe`，用 shell 寫入 `bin/pawpeek` 會覆蓋掉 exe，要改啟動器請用編輯器。
 `dist\` 打包出來的資料夾只放單一平台執行檔，不需要啟動器。
@@ -34,8 +35,9 @@ Claude Code 會把它複製到 `~/.claude/plugins/cache/pawpeek/pawpeek/<版本>
 
 改完程式碼後依序執行：
 
-1. **調高版本號**：修改 `.claude-plugin/plugin.json` 的 `version`（例如 1.2.0 → 1.2.1）。
-   Claude Code 以版本號判斷是否更新，版本不變會沿用舊快取。
+1. **調高版本號**：`.claude-plugin/plugin.json` 與 `Cargo.toml` 的 `version` **兩個都要改、而且要一致**（例如 1.2.0 → 1.2.1）。
+   Claude Code 以 plugin.json 判斷是否更新（版本不變會沿用舊快取）；執行檔以 Cargo.toml 判斷要不要提醒使用者更新。
+   兩邊不一致時 CI 的 `check-version` 會失敗、不會部署。
 2. **編譯**：
    ```powershell
    cargo build --release
@@ -65,6 +67,24 @@ Claude Code 會把它複製到 `~/.claude/plugins/cache/pawpeek/pawpeek/<版本>
    ```
    仍是舊版時，改用 `/plugin uninstall pawpeek@pawpeek` 再 `/plugin install pawpeek@pawpeek`。
 5. 開新的 session，SessionStart hook 會啟動新版桌寵。
+
+## 新版提醒的運作方式
+
+推送到 main → CI 編譯、測試 → `deploy` 把兩個執行檔與 `bin/VERSION` 一起 commit。
+桌寵啟動 5 秒後讀一次 GitHub 上的 `bin/VERSION`（之後不再檢查），比自己的版本新就把提醒暫存起來，
+等第一次待機時顯示成「一次性持久泡泡」（`setBubble(text, 0, true, true)`）：一直留著，
+直到狀態改變（例如切到工作中）或被其他泡泡蓋過（點擊、拖曳、打招呼等）就結束，這次執行不再出現。
+顯示期間閒置動作只播動畫、不冒泡泡（看 `window.__onceBubble`），閒置動作不算打斷提醒。
+提醒文字在 `messages.json` 的 `update.available`。
+
+`bin/VERSION` 只在執行檔部署後才更新，所以提醒出現時新版執行檔一定已經在 repo 裡。
+但沒透過提醒、在 CI 跑完前就手動更新的使用者，仍可能拿到「新版本號、舊執行檔」，且之後因版本號相同不會再更新；
+這時請他們 `/plugin uninstall pawpeek@pawpeek` 再重新安裝。
+
+## 動作與說話規格
+
+寵物什麼時候做什麼動作、說什麼話，完整規格在 [docs/BEHAVIOR.md](docs/BEHAVIOR.md)。
+改到狀態、動畫、泡泡、台詞或互動相關的程式前先讀它，改完一併更新。
 
 ## 故障排除
 

@@ -15,7 +15,7 @@ const FIXED_PORT: u16 = 47390;
 
 #[derive(Debug, Clone)]
 pub enum UiCommand {
-    SetState { state: LightState, duration_ms: Option<u64> },
+    SetState(LightState),
     /// 換上新的 spritesheet（例如 Petdex 下載完成）
     SetSprite(Vec<u8>),
     /// 外部指令：匯入自訂外觀（`pawpeek --import-skin`）
@@ -27,9 +27,10 @@ pub enum UiCommand {
     ReloadSkin,
     /// 在寵物頁執行的 JS（例如泡泡改到寵物下方）
     PetJs(String),
-    IdleAction { action_state: &'static str, bubble: String },
     SessionCount(u32),
     ShowBubble { text: String, duration_ms: u64 },
+    /// 有新版：交給前端，等第一次待機時以特殊泡泡顯示
+    UpdateAvailable(String),
     Greeting,
     Goodbye,
     Quit,
@@ -42,16 +43,6 @@ fn state_name(s: LightState) -> &'static str {
         LightState::NeedConfirm => "waiting",
         LightState::ToolError => "review",
         LightState::ErrorFinal => "failed",
-    }
-}
-
-fn bubble_key(s: LightState) -> Option<&'static str> {
-    match s {
-        LightState::Running => Some("state_bubble.running"),
-        LightState::NeedConfirm => Some("state_bubble.need_confirm"),
-        LightState::ToolError => Some("state_bubble.tool_error"),
-        LightState::ErrorFinal => Some("state_bubble.error_final"),
-        LightState::Idle => None,
     }
 }
 
@@ -392,15 +383,28 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
         });
     }
 
-    // Polling + idle timer
+    // 新版檢查：只在啟動時查一次（稍等讓打招呼泡泡先跑完）
+    if crate::update::enabled(&crate::config::load_env()) {
+        let proxy_upd = proxy.clone();
+        let msgs_upd = Arc::clone(&msgs);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let Some(latest) = crate::update::check() else { return };
+            let text = fill(
+                &msgs_upd.text("update.available"),
+                &[("latest", latest.as_str()), ("current", crate::update::CURRENT_VERSION)],
+            );
+            if !text.is_empty() {
+                let _ = proxy_upd.send_event(UiCommand::UpdateAvailable(text));
+            }
+        });
+    }
+
+    // 輪詢：同步狀態與對話數、清理失聯對話、打招呼 / 告別（自言自語由前端依狀態處理）
     let state_poll = Arc::clone(&state);
     let proxy_poll = proxy.clone();
-    let msgs_poll = Arc::clone(&msgs);
     std::thread::spawn(move || {
-        let mut idle_since: Option<std::time::Instant> = None;
-        let mut last_action: Option<std::time::Instant> = None;
         let mut prev_count = 0u32;
-        let actions = ["jumping", "waving", "review"];
         let mut tick: u64 = 0;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
@@ -413,7 +417,7 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                 }
                 (s.current_state(), s.session_count())
             };
-            let _ = proxy_poll.send_event(UiCommand::SetState { state: cur, duration_ms: None });
+            let _ = proxy_poll.send_event(UiCommand::SetState(cur));
             let _ = proxy_poll.send_event(UiCommand::SessionCount(count));
 
             // 检测会话数变化：打招呼 / 告别
@@ -425,44 +429,6 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                 let _ = proxy_poll.send_event(UiCommand::Goodbye);
             }
             prev_count = count;
-
-            if cur != LightState::Idle {
-                idle_since = None; last_action = None;
-                continue;
-            }
-            // Idle: only run probability every 10 ticks (~10s)
-            if tick % 10 != 0 { continue; }
-            let now = std::time::Instant::now();
-            let since = *idle_since.get_or_insert(now);
-            let elapsed = now.duration_since(since).as_secs();
-            if elapsed < 20 { continue; } // minimum 20s before first action
-            if elapsed > 7200 { continue; } // stop after 2h
-
-            // Cooldown: at least 20s between actions
-            if let Some(t) = last_action {
-                if t.elapsed().as_secs() < 20 { continue; }
-            }
-
-            // Probability decreases as idle time grows
-            let prob = if elapsed < 300 { 40 }          // 0-5min: 40% per check
-                  else if elapsed < 1800 { 15 }         // 5-30min: 15%
-                  else { 5 };                            // 30min-2h: 5%
-
-            let roll = {
-                use std::hash::{BuildHasher, Hasher};
-                let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-                h.write_u64(tick);
-                h.finish() % 100
-            };
-
-            if roll >= prob { continue; }
-
-            let s_idx = (elapsed as usize / 7) % actions.len();
-            let _ = proxy_poll.send_event(UiCommand::IdleAction {
-                action_state: actions[s_idx],
-                bubble: msgs_poll.pick("idle"),
-            });
-            last_action = Some(now);
         }
     });
 
@@ -489,26 +455,14 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
 
         match event {
             Event::UserEvent(cmd) => match cmd {
-                UiCommand::SetState { state, duration_ms } => {
+                UiCommand::SetState(state) => {
                     if last_state == Some(state) { return; }
-                    let prev = last_state;
+                    let prev = last_state.map(state_name);
                     last_state = Some(state);
+                    // 動畫與說話（進入狀態那一句、持久台詞、自言自語）都由前端依狀態處理
                     if let Some(ref wv) = webview {
-                        let sn = state_name(state);
-                        let _ = wv.evaluate_script(&format!("setHookState('{}')", sn));
-                        let _ = wv.evaluate_script(&format!("setState('{}',{})", sn, duration_ms.unwrap_or(0)));
-                        if let Some(key) = bubble_key(state) {
-                            let b = msgs_ui.text(key);
-                            // 文字留空 = 不顯示氣泡（同時清掉舊的持久氣泡）
-                            let _ = wv.evaluate_script(&format!("setBubble({},0,{})", js_str(&b), !b.is_empty()));
-                        } else if prev == Some(LightState::Running) {
-                            // 从工作切回空闲：先清空持久气泡，再展示完成气泡
-                            let _ = wv.evaluate_script("setBubble('',0,false)");
-                            let b = msgs_ui.pick("done");
-                            if !b.is_empty() { let _ = wv.evaluate_script(&format!("setBubble({},3000,false)", js_str(&b))); }
-                        } else {
-                            let _ = wv.evaluate_script("setBubble('',0,false)");
-                        }
+                        let prev_js = prev.map(|p| format!("'{p}'")).unwrap_or_else(|| "null".into());
+                        let _ = wv.evaluate_script(&format!("onHookState('{}',{})", state_name(state), prev_js));
                     }
                 }
                 UiCommand::SetSprite(bytes) => {
@@ -523,32 +477,33 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                         ));
                     }
                 }
-                UiCommand::IdleAction { action_state, bubble } => {
-                    if let Some(ref wv) = webview {
-                        let _ = wv.evaluate_script(&format!("setState('{}',5000)", action_state));
-                        if !bubble.is_empty() { let _ = wv.evaluate_script(&format!("setBubble({},4000,false)", js_str(&bubble))); }
-                    }
-                }
                 UiCommand::SessionCount(n) => {
                     if let Some(ref wv) = webview {
                         let _ = wv.evaluate_script(&format!("window.__sessions={}", n));
                     }
                 }
+                // 以下都是特殊狀態：只顯示一次，期間不被自言自語、單擊、雙擊或狀態台詞蓋掉
                 UiCommand::ShowBubble { text, duration_ms } => {
                     if let Some(ref wv) = webview {
-                        let _ = wv.evaluate_script(&format!("setBubble({},{},false)", js_str(&text), duration_ms));
+                        let _ = wv.evaluate_script(&format!("speech.special({},{})", js_str(&text), duration_ms));
+                    }
+                }
+                UiCommand::UpdateAvailable(text) => {
+                    // 前端在第一次待機時顯示，狀態改變就結束
+                    if let Some(ref wv) = webview {
+                        let _ = wv.evaluate_script(&format!("queueUpdate({})", js_str(&text)));
                     }
                 }
                 UiCommand::Greeting => {
                     let b = msgs_ui.pick("greeting");
                     if let (Some(wv), false) = (webview.as_ref(), b.is_empty()) {
-                        let _ = wv.evaluate_script(&format!("setBubble({},3000,false)", js_str(&b)));
+                        let _ = wv.evaluate_script(&format!("speech.special({},3000)", js_str(&b)));
                     }
                 }
                 UiCommand::Goodbye => {
                     let b = msgs_ui.pick("goodbye");
                     if let (Some(wv), false) = (webview.as_ref(), b.is_empty()) {
-                        let _ = wv.evaluate_script(&format!("setBubble({},4000,false)", js_str(&b)));
+                        let _ = wv.evaluate_script(&format!("speech.special({},4000)", js_str(&b)));
                     }
                 }
                 UiCommand::ImportSkin => {

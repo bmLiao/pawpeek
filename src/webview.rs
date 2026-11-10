@@ -106,6 +106,9 @@ if (stageEl) {{
 var currentState = null, stateTimer = null;
 // 防閃爍：每個動作至少播 MIN_HOLD_MS；期間的切換請求只保留最後一個，時間到再換
 var MIN_HOLD_MS = 800, lastSwitchAt = 0, pendingState = null, pendingTimer = null;
+// 目前動畫播完這一輪（回到第一格）時呼叫一次（拖曳放開後等動作播完才回待機）
+var cycleCb = null;
+function afterCycle(cb) {{ cycleCb = cb; }}
 function play(state) {{
   if (pendingTimer) {{ clearTimeout(pendingTimer); pendingTimer = null; pendingState = null; }}
   if (state === currentState) return;
@@ -123,11 +126,15 @@ function play(state) {{
   var frames = buildFrames(def);
   var i = 0;
   showFrame(frames[0].c, frames[0].r);
-  if (frames.length === 1) return;
+  if (frames.length === 1) {{ if (cycleCb) {{ var f1 = cycleCb; cycleCb = null; f1(); }} return; }}
   (function tick() {{
     stateTimer = setTimeout(function() {{
       i = (i + 1) % frames.length;
       showFrame(frames[i].c, frames[i].r);
+      if (i === 0 && cycleCb) {{
+        var f = cycleCb; cycleCb = null; f();
+        if (currentState !== state) return; // 回呼已換成別的動畫
+      }}
       tick();
     }}, frames[i].d);
   }})();
@@ -139,27 +146,6 @@ function stateLabel(s) {{
   var key = (s && s.indexOf('running') === 0) ? 'running' : s;
   return M('state_label', key) || s;
 }}
-window.__stateTimer = null;
-function backState() {{ return window.__realState || 'idle'; }}
-function isIdle() {{ return backState() === 'idle'; }}
-// 主程式（hook）呼叫的入口
-window.setState = function(state, durationMs) {{
-  localSetState(state, durationMs);
-}};
-function localSetState(state, durationMs) {{
-  play(state);
-  if (window.__stateTimer) clearTimeout(window.__stateTimer);
-  if (durationMs) {{
-    window.__stateTimer = setTimeout(function() {{
-      window.__stateTimer = null;
-      play(backState());
-    }}, durationMs);
-  }}
-}}
-window.setHookState = function(state) {{
-  window.__realState = state;
-  window.__stateLabel = stateLabel(state);
-}};
 window.__realState = 'idle';
 window.__stateLabel = stateLabel('idle');
 window.__sessions = 0;
@@ -188,38 +174,7 @@ window.applyScale = function(s) {{
 if (window.__savedScale) window.applyScale(window.__savedScale);
 else window.syncWindowSize();
 
-// --- Drag: mousedown anywhere on window → move window ---
-var dragging = false, wasDrag = false, startX = 0, startY = 0, lastMove = 0;
-document.body.addEventListener('mousedown', function(e) {{
-  if (e.button !== 0) return;
-  // 只有按在寵物身上才拖曳（視窗含預留的泡泡空間，空白處不算）
-  if (!(e.target === pet || pet.contains(e.target))) return;
-  if (navigator.platform.indexOf('Mac') !== -1 && (e.target === pet || pet.contains(e.target))) return;
-  dragging = true; wasDrag = false;
-  startX = e.screenX; startY = e.screenY; lastMove = 0;
-}});
-window.addEventListener('mousemove', function(e) {{
-  if (!dragging) return;
-  var now = Date.now();
-  if (now - lastMove < 16) return; // throttle to ~60fps
-  lastMove = now;
-  var dx = e.screenX - startX, dy = e.screenY - startY;
-  if (Math.abs(dx) > 2 || Math.abs(dy) > 2) wasDrag = true;
-  window.ipc.postMessage(JSON.stringify({{type:'move',dx:dx,dy:dy}}));
-  startX = e.screenX; startY = e.screenY;
-}});
-window.addEventListener('mouseup', function() {{
-  if (!dragging) return;
-  dragging = false;
-  window.ipc.postMessage(JSON.stringify({{type:'savePos'}}));
-  if (wasDrag) {{
-    var dragMsg = isIdle() ? M('drag','idle') : M('drag','busy');
-    window.showTransientBubble(dragMsg, 2000);
-    if (isIdle()) {{
-      localSetState('waving', 2000);
-    }}
-  }}
-}});
+{controller_js}
 
 // 右鍵：擋掉瀏覽器預設選單
 document.addEventListener('contextmenu', function(e) {{ e.preventDefault(); }});
@@ -238,33 +193,173 @@ document.addEventListener('keydown', function(e) {{
   s = Math.min(1.5, Math.max(0.5, s));
   if (s !== window.__petScale) window.applyScale(s);
   var t = fmt(M('zoom','changed'), {{scale: s.toFixed(1)}});
-  if (t) window.showTransientBubble(t, 1500);
+  if (t) speech.special(t, 1500); // 縮放提示屬於特殊狀態
 }});
 
-// --- Single-click: position-based interaction ---
-var clickActions = ['waving','jumping','waiting','review'];
-pet.addEventListener('click', function(e) {{
+</script>
+</body></html>"#, messages_js=messages_js, saved_scale=saved_scale,
+        bubble_css=crate::bubble::CSS, bubble_js=crate::bubble::JS, controller_js=CONTROLLER_JS)
+}
+
+/// 狀態與說話的控制（拖曳、單擊、雙擊、自言自語、更新提醒）。規則見 docs/BEHAVIOR.md，改動時一併更新。
+/// 需要頁面先定義 `MSG`、`pickMsg`、`fmt`、`M`、`play`、`afterCycle`、`stateLabel`、`pet`，以及 bubble.rs 的 `speech`。
+const CONTROLLER_JS: &str = r#"
+// 各狀態用的動畫；dragging 是拖曳中（只能從待機進入），依滑鼠左右方向水平翻轉
+var ANIM = { idle: 'idle', running: 'running', waiting: 'waiting', review: 'review', failed: 'failed', dragging: 'jumping' };
+// 狀態 → messages.json 的 state_bubble 欄位（持久台詞）
+var STATE_BUBBLE = { running: 'running', waiting: 'need_confirm', review: 'tool_error', failed: 'error_final' };
+var IDLE_ACTIONS = ['jumping', 'waving', 'review'];
+var CLICK_ACTIONS = ['waving', 'jumping', 'waiting', 'review'];
+var CHATTER_MS = 4000;
+
+var hookState = 'idle';      // Claude Code 的狀態
+var mode = null;             // 目前顯示的狀態（hookState 或 dragging）
+var modeSince = Date.now();  // 進入目前狀態的時間（自言自語從這裡起算）
+var lastChatter = 0;
+var pendingUpdate = null;    // 等第一次待機才顯示的更新提醒
+var actionTimer = null;
+
+// 拖曳方向：0 / 1 = 原圖（往右），-1 = 水平翻轉（往左）
+var dragDir = 0, dragAccX = 0, DRAG_DIR_PX = 6;
+
+function chatterPool(s) { var c = MSG.chatter || {}; return c[s] || []; }
+function modeAnim() { return ANIM[mode] || 'idle'; }
+function setFlip(on) { petCanvas.style.transform = on ? 'scaleX(-1)' : ''; }
+// 拖曳中依滑鼠水平移動翻轉：同方向累積超過 DRAG_DIR_PX 才換（避免手抖左右閃），停下來保持最後方向
+function trackDragDir(dx) {
+  if (mode !== 'dragging' || !dx) return;
+  dragAccX = (dx > 0) === (dragAccX > 0) ? dragAccX + dx : dx;
+  if (Math.abs(dragAccX) < DRAG_DIR_PX) return;
+  var d = dragAccX > 0 ? 1 : -1;
+  if (d === dragDir) return;
+  dragDir = d;
+  setFlip(d < 0);
+}
+
+// 短暫動作（自言自語、單擊），結束後回到目前狀態的動畫
+function playAction(a, ms) {
+  play(a);
+  clearTimeout(actionTimer);
+  actionTimer = setTimeout(function() { actionTimer = null; play(modeAnim()); }, ms);
+}
+
+// 進入狀態：自言自語重新計時、換動畫、換台詞
+//   工作中等狀態與拖曳：持久台詞，一直顯示到狀態改變
+//   待機：沒有持久台詞，進入時說一句暫時台詞（entry）
+function enterMode(m, entry) {
+  mode = m; modeSince = Date.now(); lastChatter = modeSince;
+  dragDir = 0; dragAccX = 0; setFlip(false);
+  clearTimeout(actionTimer); actionTimer = null;
+  play(modeAnim());
+  var base = m === 'dragging' ? pickMsg(chatterPool('dragging'))
+           : m === 'idle' ? '' : M('state_bubble', STATE_BUBBLE[m]);
+  speech.enter(base, entry);
+  if (m === 'idle' && pendingUpdate) {
+    var t = pendingUpdate; pendingUpdate = null;
+    speech.special(t, 0, true); // 顯示到狀態改變；期間待機的自言自語暫停
+  }
+}
+
+// 主程式通知 Claude Code 狀態改變（prev 為 null 表示剛啟動）
+window.onHookState = function(s, prev) {
+  hookState = s;
+  window.__realState = s;
+  window.__stateLabel = stateLabel(s);
+  // 轉回待機時仍按著寵物：直接接上拖曳
+  if (s === 'idle' && dragHeld) return enterMode('dragging');
+  var entry = null;
+  if (s === 'idle' && prev) entry = pickMsg(prev === 'running' ? MSG.done : chatterPool('idle'));
+  enterMode(s, entry);
+};
+
+// 有新版：已在待機就顯示，否則等第一次待機
+window.queueUpdate = function(text) {
+  if (mode === 'idle') speech.special(text, 0, true); else pendingUpdate = text;
+};
+
+// 自言自語：停留在同一個狀態才會說（拖曳中、特殊狀態期間不說）
+setInterval(function() {
+  if (mode === null || mode === 'dragging' || speech.busy()) return;
+  var now = Date.now(), stay = now - modeSince;
+  if (stay < 20000 || stay > 7200000 || now - lastChatter < 20000) return;
+  var prob = stay < 300000 ? 0.4 : stay < 1800000 ? 0.15 : 0.05;
+  if (Math.random() >= prob) return;
+  if (!speech.say(pickMsg(chatterPool(mode)), CHATTER_MS)) return;
+  lastChatter = now;
+  if (mode === 'idle') playAction(IDLE_ACTIONS[Math.floor(Math.random() * IDLE_ACTIONS.length)], 5000);
+}, 10000);
+
+// --- 拖曳：按住超過 PRESS_MS 或開始移動就進入拖曳；比這短就放開算單擊 ---
+var PRESS_MS = 150;
+var mouseDown = false, dragHeld = false, wasDrag = false, skipClick = false, pressTimer = null;
+var startX = 0, startY = 0, lastMove = 0;
+function startDrag() {
+  clearTimeout(pressTimer); pressTimer = null;
+  if (!mouseDown || dragHeld) return;
+  dragHeld = true;
+  pet.classList.add('dragging');
+  // 非待機：保留目前狀態的動畫與台詞，轉回待機時（仍按著）再接上拖曳
+  if (hookState === 'idle') enterMode('dragging');
+}
+function endDrag() {
+  dragHeld = false;
+  pet.classList.remove('dragging');
+  if (mode !== 'dragging') return;
+  // 拖曳動作完整播完這一輪才回待機（拖曳屬於待機底下的動作，回待機不另外說話）
+  afterCycle(function() { if (mode === 'dragging' && !dragHeld) enterMode('idle', null); });
+}
+document.body.addEventListener('mousedown', function(e) {
+  if (e.button !== 0) return;
+  // 只有按在寵物身上才拖曳（視窗含預留的泡泡空間，空白處不算）
+  if (!(e.target === pet || pet.contains(e.target))) return;
+  if (navigator.platform.indexOf('Mac') !== -1) return;
+  mouseDown = true; wasDrag = false; skipClick = false;
+  startX = e.screenX; startY = e.screenY; lastMove = 0;
+  pressTimer = setTimeout(startDrag, PRESS_MS);
+});
+window.addEventListener('mousemove', function(e) {
+  if (!mouseDown) return;
+  var now = Date.now();
+  if (now - lastMove < 16) return; // throttle to ~60fps
+  lastMove = now;
+  var dx = e.screenX - startX, dy = e.screenY - startY;
+  if (Math.abs(dx) > 2 || Math.abs(dy) > 2) { wasDrag = true; startDrag(); }
+  trackDragDir(dx);
+  window.ipc.postMessage(JSON.stringify({type:'move',dx:dx,dy:dy}));
+  startX = e.screenX; startY = e.screenY;
+});
+window.addEventListener('mouseup', function() {
+  if (!mouseDown) return;
+  mouseDown = false;
+  clearTimeout(pressTimer); pressTimer = null;
+  if (wasDrag) window.ipc.postMessage(JSON.stringify({type:'savePos'}));
+  if (dragHeld) { skipClick = true; endDrag(); }
+});
+
+// --- 單擊：依目前狀態說一句自言自語（待機時加一個小動作） ---
+// 等 CLICK_WAIT_MS 確定不是雙擊才算單擊（雙擊時瀏覽器會先送兩次 click）
+var CLICK_WAIT_MS = 250;
+var clickBusy = false, clickTimer = null;
+pet.addEventListener('click', function() {
+  if (skipClick || wasDrag) { skipClick = false; return; }
+  if (clickTimer) return; // 第二下：交給 dblclick
+  clickTimer = setTimeout(function() { clickTimer = null; singleClick(); }, CLICK_WAIT_MS);
+});
+function singleClick() {
+  if (clickBusy) return;
+  var m = (mode === 'dragging' || !mode) ? 'idle' : mode;
+  if (!speech.say(pickMsg(chatterPool(m)), CHATTER_MS)) return; // 特殊狀態期間不說
+  if (m === 'idle') {
+    clickBusy = true;
+    playAction(CLICK_ACTIONS[Math.floor(Math.random() * CLICK_ACTIONS.length)], 2000);
+    setTimeout(function() { clickBusy = false; }, 2000);
+  }
+}
+
+// --- 雙擊：回報對話數與狀態（特殊狀態期間不說） ---
+pet.addEventListener('dblclick', function() {
+  clearTimeout(clickTimer); clickTimer = null; // 取消等待中的單擊
   if (wasDrag) return;
-  if (!isIdle()) return;
-  if (window.__clickBusy) return;
-  window.__clickBusy = true;
-  var rect = pet.getBoundingClientRect();
-  var y = (e.clientY - rect.top) / rect.height;
-  var t, a;
-  if (y < 0.3) {{
-    t = pickMsg(MSG.click_head);
-    a = 'waving';
-  }} else {{
-    t = pickMsg(MSG.click_body);
-    a = clickActions[Math.floor(Math.random() * clickActions.length)];
-  }}
-  if (t) window.showTransientBubble(t, 3000);
-  localSetState(a, 2000);
-  setTimeout(function() {{ window.__clickBusy = false; }}, 2000);
-}});
-
-// --- Double-click shows status with session count ---
-pet.addEventListener('dblclick', function(e) {{
   var state = window.__realState || 'idle';
   var count = window.__sessions || 0;
   var key;
@@ -272,14 +367,10 @@ pet.addEventListener('dblclick', function(e) {{
   else if (state.indexOf('running') !== -1) key = 'running';
   else if (state === 'waiting' || state === 'review' || state === 'failed') key = state;
   else key = 'other';
-  var msg = fmt(M('dblclick', key), {{count: count, state: window.__stateLabel || state}});
-  if (msg) window.showTransientBubble(msg, 3000);
-}});
-
-</script>
-</body></html>"#, messages_js=messages_js, saved_scale=saved_scale,
-        bubble_css=crate::bubble::CSS, bubble_js=crate::bubble::JS)
-}
+  var msg = fmt(M('dblclick', key), {count: count, state: window.__stateLabel || state});
+  speech.say(msg, 3000);
+});
+"#;
 
 pub fn build_empty_page(message: &str) -> String {
     let msg_json = serde_json::to_string(message).unwrap_or_else(|_| "\"\"".into());
