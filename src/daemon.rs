@@ -99,7 +99,7 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
         .map_err(|_| format!("Port {} already in use", port))?;
     let state = Arc::new(Mutex::new(StateMachine::new()));
-    let mut event_loop = EventLoopBuilder::<UiCommand>::with_user_event().build();
+    let event_loop = EventLoopBuilder::<UiCommand>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
     let state_srv = Arc::clone(&state);
