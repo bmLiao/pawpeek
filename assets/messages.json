@@ -97,15 +97,8 @@
     "failed": "出包了 · 共 {count} 個對話 😱",
     "other": "對話：{count} | 狀態：{state}"
   },
-  "position": {
-    "home": "📍 我蹦回來囉！"
-  },
   "zoom": {
     "changed": "🔍 調整成 {scale} 倍"
-  },
-  "menu": {
-    "size": "🔍 調整大小",
-    "quit": "× 離開"
   },
   "skin": {
     "downloading": "🐰 {name} 蹦蹦蹦馬上就來囉……",

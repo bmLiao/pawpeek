@@ -16,13 +16,11 @@ const FIXED_PORT: u16 = 47390;
 #[derive(Debug, Clone)]
 pub enum UiCommand {
     SetState { state: LightState, duration_ms: Option<u64> },
-    SwitchRunning,
     /// 換上新的 spritesheet（例如 Petdex 下載完成）
     SetSprite(Vec<u8>),
     /// 外部指令：匯入自訂外觀（`pawpeek --import-skin`）
     ImportSkin,
     /// 讓 WebView 取得鍵盤焦點（點寵物後可用 +/- 縮放）
-    FocusWebview,
     /// 檢查寵物是否還在某個螢幕上（拔掉螢幕後救回來）
     CheckOnScreen,
     /// 外部指令：依 .env 重新載入外觀（`pawpeek --set-skin` 改完 .env 後送來）
@@ -40,7 +38,7 @@ pub enum UiCommand {
 fn state_name(s: LightState) -> &'static str {
     match s {
         LightState::Idle => "idle",
-        LightState::Running => "running-right", // default
+        LightState::Running => "running",
         LightState::NeedConfirm => "waiting",
         LightState::ToolError => "review",
         LightState::ErrorFinal => "failed",
@@ -110,7 +108,7 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
         let ui = match cmd {
             "import_skin" => UiCommand::ImportSkin,
             "reload_skin" => UiCommand::ReloadSkin,
-            // 跟右鍵選單的「離開」一樣：下次新 session 開始才會再出現
+            // 手動離開：下次新 session 開始才會再出現
             "quit" => { mark_manual_quit(); UiCommand::Quit }
             _ => return,
         };
@@ -181,9 +179,8 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
         }
     }
 
-    // Restore saved position, or default to bottom-right
-    // 啟動位置：作用中視窗（通常是開 Claude 的終端機）內側右下角；
-    // 沒有可用視窗時用上次記住的位置（須在現有螢幕上），再不行就主螢幕中央
+    // 啟動位置：上次記住的位置；不在任何螢幕上（或沒記錄）才重置到
+    // 作用中視窗（通常是開 Claude 的終端機）內側右下角，找不到就主螢幕中央
     {
         let active = active_window_rect();
         // 移到縮放比例不同的螢幕時 Windows 會重新調整視窗大小與位置 → 用新大小再算一次
@@ -191,9 +188,9 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
             let sf = window.scale_factor();
             let size = window.outer_size();
             let (sw, sh) = (size.width as i32, size.height as i32);
-            let (x, y) = match (active, load_position()) {
-                (None, Some((x, y))) if on_any_monitor(&window, x + sw / 2, y + sh / 2) => (x, y),
-                (active, _) => home_spot_for(&window, active, (sw, sh)),
+            let (x, y) = match load_position() {
+                Some((x, y)) if on_any_monitor(&window, x + sw / 2, y + sh / 2) => (x, y),
+                _ => home_spot_for(&window, active, (sw, sh)),
             };
             window.set_outer_position(tao::dpi::PhysicalPosition::new(x, y));
             if window.scale_factor() == sf { break; }
@@ -252,7 +249,6 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
         })
         .with_url("pet://localhost/")
         .with_ipc_handler(move |msg| {
-            if msg.body() == "quit" { mark_manual_quit(); std::process::exit(0); }
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(msg.body()) {
                 if v.get("type").and_then(|t| t.as_str()) == Some("savePos") {
                     if let Ok(w) = drag_win.lock() {
@@ -271,7 +267,7 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                 }
                 if v.get("type").and_then(|t| t.as_str()) == Some("center") {
                     if let Ok(w) = drag_win.lock() {
-                        // 寵物（不含泡泡）回到作用中視窗旁（按 c 或螢幕被拔掉時），找不到就主螢幕中央
+                        // 螢幕被拔掉時：寵物（不含泡泡）回到作用中視窗旁，找不到就主螢幕中央
                         {
                             let active = active_window_rect();
                             let cur = content_rect(&w);
@@ -293,38 +289,6 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                             }
                         }
                     }
-                }
-                if v.get("type").and_then(|t| t.as_str()) == Some("release") {
-                    release_focus();
-                }
-                if v.get("act").and_then(|a| a.as_str()) == Some("1") {
-                    #[cfg(target_os = "macos")]
-                    if let Ok(w) = drag_win.lock() {
-                        use tao::platform::macos::WindowExtMacOS;
-                        let ns = w.ns_window();
-                        if !ns.is_null() {
-                            unsafe {
-                                let ns_obj = ns as *mut objc::runtime::Object;
-                                let cls: *mut objc::runtime::Object = objc::msg_send![ns_obj, class];
-                                if !cls.is_null() {
-                                    let app: *mut objc::runtime::Object = objc::msg_send![objc::class!(NSApplication), sharedApplication];
-                                    let _: () = objc::msg_send![app, activateIgnoringOtherApps: true];
-                                    let _: () = objc::msg_send![ns_obj, makeKeyAndOrderFront: std::ptr::null::<objc::runtime::Object>()];
-                                }
-                            }
-                        }
-                    }
-                    #[cfg(target_os = "windows")]
-                    if let Ok(w) = drag_win.lock() {
-                        use tao::platform::windows::WindowExtWindows;
-                        extern "system" {
-                            fn SetForegroundWindow(hwnd: isize) -> i32;
-                        }
-                        // 桌寵不搶焦點，點它的當下作用中的還是上一個程式：記下來給 c 用
-                        remember_active_window();
-                        unsafe { SetForegroundWindow(w.hwnd() as isize); }
-                    }
-                    let _ = proxy_ipc.send_event(UiCommand::FocusWebview);
                 }
                 if v.get("type").and_then(|t| t.as_str()) == Some("saveScale") {
                     if let Some(s) = v.get("scale").and_then(|s| s.as_f64()) {
@@ -399,6 +363,17 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
     }
 
     { let w = window.lock().unwrap(); w.set_visible(true); }
+    // 啟動時用 WS_EX_NOACTIVATE 避免搶焦點；顯示後拿掉，之後點桌寵就照系統預設取得焦點
+    #[cfg(target_os = "windows")]
+    {
+        use tao::platform::windows::WindowExtWindows;
+        extern "system" {
+            fn SetWindowLongPtrW(hwnd: isize, index: i32, new_long: isize) -> isize;
+            fn GetWindowLongPtrW(hwnd: isize, index: i32) -> isize;
+        }
+        let hwnd = window.lock().unwrap().hwnd() as isize;
+        unsafe { SetWindowLongPtrW(hwnd, -20, GetWindowLongPtrW(hwnd, -20) & !0x08000000); }
+    }
 
     // 啟動提示 + 需要時從 Petdex 下載外觀（稍等頁面載入完成再送氣泡）
     if startup_bubble.is_some() || pending_download.is_some() {
@@ -423,7 +398,6 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
     std::thread::spawn(move || {
         let mut idle_since: Option<std::time::Instant> = None;
         let mut last_action: Option<std::time::Instant> = None;
-        let mut last_running_switch = std::time::Instant::now();
         let mut prev_count = 0u32;
         let actions = ["jumping", "waving", "review"];
         let mut tick: u64 = 0;
@@ -447,10 +421,6 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
             }
             prev_count = count;
 
-            if cur == LightState::Running && last_running_switch.elapsed().as_secs() >= 4 {
-                last_running_switch = std::time::Instant::now();
-                let _ = proxy_poll.send_event(UiCommand::SwitchRunning);
-            }
             if cur != LightState::Idle {
                 idle_since = None; last_action = None;
                 continue;
@@ -493,7 +463,6 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
 
     // Event loop
     let mut last_state: Option<LightState> = None;
-    let mut running_dir = "running-right";
     let mut exit_at: Option<std::time::Instant> = None;
     let state_exit = Arc::clone(&state);
     let webview = Some(webview);
@@ -535,12 +504,6 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                         } else {
                             let _ = wv.evaluate_script("setBubble('',0,false)");
                         }
-                    }
-                }
-                UiCommand::SwitchRunning => {
-                    if let Some(ref wv) = webview {
-                        running_dir = if running_dir == "running-right" { "running-left" } else { "running-right" };
-                        let _ = wv.evaluate_script(&format!("setState('{}',0)", running_dir));
                     }
                 }
                 UiCommand::SetSprite(bytes) => {
@@ -611,7 +574,6 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                         if let Some(name) = pending { download_skin(&proxy, &msgs, &name); }
                     });
                 }
-                UiCommand::FocusWebview => { if let Some(ref wv) = webview { let _ = wv.focus(); } }
                 UiCommand::PetJs(js) => { if let Some(ref wv) = webview { let _ = wv.evaluate_script(&js); } }
                 UiCommand::CheckOnScreen => {
                     let lost = window.lock().map(|w| {
@@ -621,7 +583,7 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                     }).unwrap_or(false);
                     if lost {
                         if let Some(ref wv) = webview {
-                            // 走跟按 c 一樣的置中流程（需要泡泡狀態）
+                            // 置中流程在 IPC 處理（需要泡泡狀態）
                             let _ = wv.evaluate_script("window.ipc.postMessage(JSON.stringify({type:'center'}))");
                         }
                     }
@@ -825,9 +787,6 @@ fn home_spot_for(w: &tao::window::Window, active: Option<crate::bubble::Rect>, b
     crate::bubble::home_spot(active, &monitors, primary, base)
 }
 
-/// 最近一次點桌寵前的作用中視窗
-static LAST_ACTIVE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-
 #[cfg(target_os = "windows")]
 mod win_active {
     extern "system" {
@@ -861,36 +820,11 @@ fn usable_window_rect(hwnd: isize) -> Option<crate::bubble::Rect> {
     }
 }
 
-/// 作用中視窗的位置；作用中的是桌寵自己（剛被點）就用點之前記下的那個
+/// 作用中視窗的位置
 #[cfg(target_os = "windows")]
 fn active_window_rect() -> Option<crate::bubble::Rect> {
     usable_window_rect(unsafe { win_active::GetForegroundWindow() })
-        .or_else(|| usable_window_rect(LAST_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)))
 }
-
-#[cfg(target_os = "windows")]
-fn remember_active_window() {
-    let fg = unsafe { win_active::GetForegroundWindow() };
-    if usable_window_rect(fg).is_some() {
-        LAST_ACTIVE.store(fg, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-/// 把前景還給點桌寵前的程式（只在桌寵目前是前景時才動作）
-#[cfg(target_os = "windows")]
-fn release_focus() {
-    extern "system" { fn SetForegroundWindow(hwnd: isize) -> i32; }
-    let pet = PET_HWND.load(std::sync::atomic::Ordering::SeqCst);
-    let fg = unsafe { win_active::GetForegroundWindow() };
-    if pet == 0 || unsafe { win_active::GetAncestor(fg, 2) } != pet { return; }
-    let prev = LAST_ACTIVE.load(std::sync::atomic::Ordering::SeqCst);
-    if usable_window_rect(prev).is_some() {
-        unsafe { SetForegroundWindow(prev); }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn release_focus() {}
 
 #[cfg(not(target_os = "windows"))]
 fn active_window_rect() -> Option<crate::bubble::Rect> { None }

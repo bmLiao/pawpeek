@@ -7,6 +7,7 @@ pub fn build_page(messages_js: &str, saved_scale: f64) -> String {
 <meta charset="utf-8">
 <style>
   html, body {{ margin: 0; padding: 0; background: transparent; overflow: hidden; width: 100%; height: 100%; font-family: -apple-system, system-ui, sans-serif; }}
+  html, body, body * {{ -webkit-user-select: none; user-select: none; }}
   body input {{ -webkit-user-select: auto; user-select: auto; }}
   * {{ cursor: default !important; }}
   .stage {{ position: fixed; left: 0; top: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }}
@@ -37,6 +38,14 @@ var STATES = {{
   running:        {{ row: 7, count: 6, dur: 120, last: 220 }},
   review:         {{ row: 8, count: 6, dur: 150, last: 280 }},
 }};
+// 用實體按鍵（e.code）判斷，開中文輸入法時也有效
+function keyName(e) {{
+  var m = /^(?:Digit|Numpad)([0-9])$/.exec(e.code) || /^Key([A-Z])$/.exec(e.code);
+  if (m) return m[1].toLowerCase();
+  if (e.code === 'BracketLeft') return '[';
+  if (e.code === 'BracketRight') return ']';
+  return e.key;
+}}
 // 提示文字（來自 文件/.pawpeek/messages.json）
 var MSG = {messages_js};
 function M(group, key) {{ var g = MSG[group]; return (g && typeof g[key] === 'string') ? g[key] : ''; }}
@@ -94,9 +103,19 @@ if (stageEl) {{
   stageEl.style.display = 'flex';
   stageEl.style.alignItems = 'center';
 }}
-var currentState = 'idle', stateTimer = null;
+var currentState = null, stateTimer = null;
+// 防閃爍：每個動作至少播 MIN_HOLD_MS；期間的切換請求只保留最後一個，時間到再換
+var MIN_HOLD_MS = 800, lastSwitchAt = 0, pendingState = null, pendingTimer = null;
 function play(state) {{
+  if (pendingTimer) {{ clearTimeout(pendingTimer); pendingTimer = null; pendingState = null; }}
   if (state === currentState) return;
+  var wait = lastSwitchAt + MIN_HOLD_MS - Date.now();
+  if (currentState !== null && wait > 0) {{
+    pendingState = state;
+    pendingTimer = setTimeout(function() {{ var s = pendingState; pendingTimer = null; pendingState = null; play(s); }}, wait);
+    return;
+  }}
+  lastSwitchAt = Date.now();
   currentState = state;
   pet.dataset.state = state;
   if (stateTimer) {{ clearTimeout(stateTimer); stateTimer = null; }}
@@ -121,16 +140,22 @@ function stateLabel(s) {{
   return M('state_label', key) || s;
 }}
 window.__stateTimer = null;
+function backState() {{ return window.__realState || 'idle'; }}
+function isIdle() {{ return backState() === 'idle'; }}
+// 主程式（hook）呼叫的入口
 window.setState = function(state, durationMs) {{
+  localSetState(state, durationMs);
+}};
+function localSetState(state, durationMs) {{
   play(state);
   if (window.__stateTimer) clearTimeout(window.__stateTimer);
   if (durationMs) {{
     window.__stateTimer = setTimeout(function() {{
-      play(window.__realState || 'idle');
       window.__stateTimer = null;
+      play(backState());
     }}, durationMs);
   }}
-}};
+}}
 window.setHookState = function(state) {{
   window.__realState = state;
   window.__stateLabel = stateLabel(state);
@@ -144,16 +169,15 @@ window.__savedScale = {saved_scale};
 window.__baseSize = {{ w: 140, h: 180 }};
 {bubble_js}
 
-// Global scale function (used by menu and restore)
+// 縮放（[ / ] 與啟動時還原）
 window.applyScale = function(s) {{
   window.__petScale = s;
   // 缩放整个页面（zoom 在 WKWebView 和 WebView2 均支持）
   document.body.style.zoom = s;
-  var sizeLabel = document.getElementById('size-label');
-  if (sizeLabel) sizeLabel.textContent = M('menu','size')+' x'+s.toFixed(1);
   var pw = Math.ceil(112 * s);
   var ph = Math.ceil(pw / 192 * 208);
   window.__baseSize = {{ w: pw + 40, h: ph + 60 }};
+  if (window.resetBubbleReserve) window.resetBubbleReserve();
   // 寵物上下各留 30（螢幕像素）；body 有 zoom，所以除以 s
   if (stageEl) stageEl.style.padding = (30 / s) + 'px 0';
   window.syncWindowSize();
@@ -162,11 +186,14 @@ window.applyScale = function(s) {{
 
 // Restore saved scale
 if (window.__savedScale) window.applyScale(window.__savedScale);
+else window.syncWindowSize();
 
 // --- Drag: mousedown anywhere on window → move window ---
 var dragging = false, wasDrag = false, startX = 0, startY = 0, lastMove = 0;
 document.body.addEventListener('mousedown', function(e) {{
   if (e.button !== 0) return;
+  // 只有按在寵物身上才拖曳（視窗含預留的泡泡空間，空白處不算）
+  if (!(e.target === pet || pet.contains(e.target))) return;
   if (navigator.platform.indexOf('Mac') !== -1 && (e.target === pet || pet.contains(e.target))) return;
   dragging = true; wasDrag = false;
   startX = e.screenX; startY = e.screenY; lastMove = 0;
@@ -186,102 +213,25 @@ window.addEventListener('mouseup', function() {{
   dragging = false;
   window.ipc.postMessage(JSON.stringify({{type:'savePos'}}));
   if (wasDrag) {{
-    var dragMsg = (!window.__realState || window.__realState === 'idle') ? M('drag','idle') : M('drag','busy');
+    var dragMsg = isIdle() ? M('drag','idle') : M('drag','busy');
     window.showTransientBubble(dragMsg, 2000);
-    if (!window.__realState || window.__realState === 'idle') {{
-      window.setState('waving', 2000);
+    if (isIdle()) {{
+      localSetState('waving', 2000);
     }}
   }}
 }});
 
-// --- Right-click menu (list) ---
-// 右鍵選單暫時關閉：改成 true 就恢復
-window.__menuEnabled = false;
-pet.addEventListener('contextmenu', function(e) {{
-  e.preventDefault();
-  if (!window.__menuEnabled) return;
-  window.ipc.postMessage(JSON.stringify({{act:'1'}}));
-  // Activate the window so timers & blur work
-  window.ipc.postMessage(JSON.stringify({{type:'focus'}}));
-  var menu = document.getElementById('pet-menu');
-  if (!menu) {{
-    menu = document.createElement('div');
-    menu.id = 'pet-menu';
-    menu.style.cssText = 'position:fixed;background:rgba(20,20,22,0.96);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px;z-index:999;left:4px;right:4px;top:4px;bottom:4px;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;-ms-overflow-style:none;pointer-events:auto;display:none';
-    document.body.appendChild(menu);
-    // Dismiss on outside click or window blur
-    document.addEventListener('click', function(ev) {{ if (menu && menu.style.display === 'block' && !menu.contains(ev.target) && ev.target !== pet) {{ menu.style.display = 'none'; document.body.style.pointerEvents = 'none'; }} }});
-    window.addEventListener('blur', function() {{ if (menu) {{ menu.style.display = 'none'; document.body.style.pointerEvents = 'none'; }} }});
-  }}
-  menu.innerHTML = '';
-  function hideMenu() {{ menu.style.display = 'none'; document.body.style.pointerEvents = 'none'; }}
-  // 選單項目：整列可點、左對齊、hover 高亮
-  function addItem(label, color, onClick) {{
-    var it = document.createElement('div');
-    it.textContent = label;
-    it.style.cssText = 'padding:6px 10px;border-radius:6px;color:' + (color || '#ddd') + ';cursor:pointer;font-size:11px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
-    it.addEventListener('mouseenter', function() {{ it.style.background = 'rgba(255,255,255,0.08)'; }});
-    it.addEventListener('mouseleave', function() {{ it.style.background = ''; }});
-    it.addEventListener('click', function(ev) {{ ev.stopPropagation(); onClick(); }});
-    menu.appendChild(it);
-    return it;
-  }}
-
-  // Size control（程式保留，暫不顯示於 UI；改 true 即恢復）
-  var SHOW_SIZE_CONTROL = false;
-  window.__petScale = window.__petScale || 1.0;
-  if (SHOW_SIZE_CONTROL) {{
-  var sizeLabel = document.createElement('div');
-  sizeLabel.id = 'size-label';
-  sizeLabel.textContent = M('menu','size') + ' x' + window.__petScale.toFixed(1);
-  sizeLabel.style.cssText = 'padding:3px 8px;color:rgba(255,255,255,0.4);font-size:9px;text-align:center';
-  menu.appendChild(sizeLabel);
-  var sizeRow = document.createElement('div');
-  sizeRow.style.cssText = 'display:flex;gap:4px;justify-content:center;padding:2px 0';
-  var minus = document.createElement('div');
-  minus.textContent = '−'; minus.style.cssText = 'width:22px;text-align:center;color:#aaa;cursor:pointer;font-size:12px;border-radius:3px';
-  minus.addEventListener('mouseenter', function(){{ minus.style.background='rgba(255,255,255,0.1)'; }});
-  minus.addEventListener('mouseleave', function(){{ minus.style.background=''; }});
-  var plus = document.createElement('div');
-  plus.textContent = '+'; plus.style.cssText = 'width:22px;text-align:center;color:#aaa;cursor:pointer;font-size:12px;border-radius:3px';
-  plus.addEventListener('mouseenter', function(){{ plus.style.background='rgba(255,255,255,0.1)'; }});
-  plus.addEventListener('mouseleave', function(){{ plus.style.background=''; }});
-  minus.addEventListener('click', function(e){{ e.stopPropagation(); window.applyScale(Math.max(0.5, window.__petScale - 0.1)); }});
-  plus.addEventListener('click', function(e){{ e.stopPropagation(); window.applyScale(Math.min(1.5, window.__petScale + 0.1)); }});
-  sizeRow.appendChild(minus); sizeRow.appendChild(plus);
-  menu.appendChild(sizeRow);
-  var hr2 = document.createElement('hr');
-  hr2.style.cssText = 'margin:4px 0;border:none;border-top:1px solid rgba(255,255,255,0.06)';
-  menu.appendChild(hr2);
-  }}
-
-  // 選單項目
-  addItem(M('menu','quit'), '#f88', function() {{ window.ipc.postMessage('quit'); hideMenu(); }});
-  document.body.style.pointerEvents = 'auto';
-  menu.style.display = 'block';
-  menu.style.top = '4px';
-  e.stopPropagation();
-  // Auto-close after 3s (reset on hover)
-  clearTimeout(window.__menuTimer);
-  window.__menuTimer = setTimeout(function() {{ menu.style.display = 'none'; document.body.style.pointerEvents = 'none'; }}, 3000);
-  menu.onmouseenter = function() {{ clearTimeout(window.__menuTimer); }};
-  menu.onmouseleave = function() {{ window.__menuTimer = setTimeout(function() {{ menu.style.display = 'none'; document.body.style.pointerEvents = 'none'; }}, 1500); }};
-}});
+// 右鍵：擋掉瀏覽器預設選單
+document.addEventListener('contextmenu', function(e) {{ e.preventDefault(); }});
 
 // --- 鍵盤（點一下寵物取得焦點後可用）---
-// +/-：縮放，範圍與選單相同 0.5～1.5；c：回到作用中視窗旁（找不到就主螢幕中央）
+// [ / ]：縮小 / 放大，範圍 0.5～1.5
 document.addEventListener('keydown', function(e) {{
   if (e.ctrlKey || e.altKey || e.metaKey) return;
-  if (e.key === 'c' || e.key === 'C') {{
-    e.preventDefault();
-    window.ipc.postMessage(JSON.stringify({{type:'center'}}));
-    var ct = M('position','home');
-    if (ct) window.showTransientBubble(ct, 1500);
-    return;
-  }}
+  var k = keyName(e);
   var d = 0;
-  if (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') d = 0.1;
-  else if (e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract') d = -0.1;
+  if (k === ']') d = 0.1;
+  else if (k === '[') d = -0.1;
   if (!d) return;
   e.preventDefault();
   var s = Math.round(((window.__petScale || 1.0) + d) * 10) / 10;
@@ -291,21 +241,11 @@ document.addEventListener('keydown', function(e) {{
   if (t) window.showTransientBubble(t, 1500);
 }});
 
-// 滑鼠離開桌寵：把鍵盤焦點還給原本的程式，不打斷使用者工作
-document.addEventListener('mouseout', function(e) {{
-  if (e.relatedTarget || !window.__hasKeyFocus) return;
-  window.__hasKeyFocus = false;
-  window.ipc.postMessage(JSON.stringify({{type:'release'}}));
-}});
-
 // --- Single-click: position-based interaction ---
 var clickActions = ['waving','jumping','waiting','review'];
 pet.addEventListener('click', function(e) {{
-  if (wasDrag) return; // 拖曳不取得焦點
-  // 取得鍵盤焦點（視窗設了 NOACTIVATE，點擊不會自動取得）；滑鼠離開時還回去
-  window.ipc.postMessage(JSON.stringify({{act:'1'}}));
-  window.__hasKeyFocus = true;
-  if (window.__realState && window.__realState !== 'idle') return;
+  if (wasDrag) return;
+  if (!isIdle()) return;
   if (window.__clickBusy) return;
   window.__clickBusy = true;
   var rect = pet.getBoundingClientRect();
@@ -319,7 +259,7 @@ pet.addEventListener('click', function(e) {{
     a = clickActions[Math.floor(Math.random() * clickActions.length)];
   }}
   if (t) window.showTransientBubble(t, 3000);
-  window.setState(a, 2000);
+  localSetState(a, 2000);
   setTimeout(function() {{ window.__clickBusy = false; }}, 2000);
 }});
 

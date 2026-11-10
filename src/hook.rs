@@ -70,11 +70,13 @@ pub fn map_hook_event(payload: &HookPayload) -> &'static str {
             _ => "tool_error",
         },
 
+        // 單一工具失敗（grep 找不到、指令回傳非 0…）很常見，Claude 會自己接著做：維持工作中，
+        // 避免 running ↔ review 來回切換；整輪真的失敗由 StopFailure 處理
         Some("PostToolUseFailure") => {
             if payload.is_interrupt.unwrap_or(false) {
                 "stop"
             } else {
-                "tool_error"
+                "running"
             }
         }
 

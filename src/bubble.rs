@@ -121,16 +121,27 @@ pub const JS: &str = r#"
   var ghost = el.querySelector('.ghost'), typed = el.querySelector('.typed');
   var visible = false, target = '', timer = null, hideTimer = null;
 
-  // 視窗大小：沒泡泡 = 寵物視窗；有泡泡 = 再加上泡泡（主程式負責讓寵物在螢幕上不動）
+  // 視窗大小：寵物 + 一律預留泡泡空間（最寬 260px、約 4 行高）。
+  // 泡泡消失只隱藏、不縮視窗：縮放視窗時 WebView2 會晚一兩幀才重繪，寵物會錯位閃一下。
+  // 文字超出預留空間才放大，之後不再縮回。（主程式負責讓寵物在螢幕上不動）
+  var RESERVE_W = 276, RESERVE_H = 84, reserveW = 0, reserveH = 0, lastSize = '';
   window.syncWindowSize = function() {
-    var b = window.__baseSize, w = b.w, h = b.h;
+    var b = window.__baseSize, s = window.__petScale || 1;
+    var bw = Math.ceil(RESERVE_W * s), bh = Math.ceil(RESERVE_H * s);
     if (visible) {
       var r = el.getBoundingClientRect();
-      w = Math.max(w, Math.ceil(r.width) + 16);
-      h = h + Math.ceil(r.height) + Math.ceil(12 * (window.__petScale || 1));
+      reserveW = Math.max(reserveW, Math.ceil(r.width) + 16);
+      reserveH = Math.max(reserveH, Math.ceil(r.height));
     }
+    var w = Math.max(b.w, bw, reserveW);
+    var h = b.h + Math.max(bh, reserveH) + Math.ceil(12 * s);
+    var key = w + 'x' + h + '/' + b.w + 'x' + b.h;
+    if (key === lastSize) return;
+    lastSize = key;
     window.ipc.postMessage(JSON.stringify({type:'resize', w: w, h: h, baseW: b.w, baseH: b.h}));
   };
+  // 縮放後預留空間依新比例重算
+  window.resetBubbleReserve = function() { reserveW = 0; reserveH = 0; };
   window.setBubbleSide = function(below) { stageEl.classList.toggle('below', !!below); };
 
   function stop() { if (timer) { clearInterval(timer); timer = null; } typed.classList.remove('shimmer'); }
@@ -177,7 +188,6 @@ pub const JS: &str = r#"
     el.classList.remove('show');
     hideTimer = setTimeout(function() {
       el.style.display = 'none'; typed.textContent = ''; ghost.textContent = '';
-      window.syncWindowSize();
     }, 220);
   }
 
