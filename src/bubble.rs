@@ -109,6 +109,8 @@ pub const CSS: &str = r#"
     -webkit-background-clip: text; background-clip: text; color: transparent;
     animation: bubble-shimmer 2.5s linear infinite;
   }
+  /* emoji 遇到 color: transparent 會變透明、只剩被漸層填滿的白色剪影；包成 span 給不透明顏色，保留原本彩色 */
+  #pet-bubble .typed.shimmer .emoji { color: #fff; }
   @keyframes bubble-shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
 "#;
 
@@ -148,6 +150,20 @@ pub const JS: &str = r#"
   window.resetBubbleReserve = function() { reserveW = 0; reserveH = 0; };
   window.setBubbleSide = function(below) { stageEl.classList.toggle('below', !!below); };
 
+  var EMOJI_RE = /\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*/gu;
+  // 開始掃光：重排文字，emoji 包進 .emoji span（見 CSS 說明）
+  function startShimmer() {
+    var s = typed.textContent, last = 0, m;
+    typed.textContent = '';
+    EMOJI_RE.lastIndex = 0;
+    while ((m = EMOJI_RE.exec(s))) {
+      if (m.index > last) typed.appendChild(document.createTextNode(s.slice(last, m.index)));
+      var sp = document.createElement('span'); sp.className = 'emoji'; sp.textContent = m[0];
+      typed.appendChild(sp); last = m.index + m[0].length;
+    }
+    if (last < s.length) typed.appendChild(document.createTextNode(s.slice(last)));
+    typed.classList.add('shimmer');
+  }
   function stop() { if (timer) { clearInterval(timer); timer = null; } typed.classList.remove('shimmer'); }
   function splitDots(s) {
     if (/(\.\.\.|…)$/.test(s)) return { base: s.replace(/(\.\.\.|…)$/, ''), dots: true };
@@ -163,7 +179,7 @@ pub const JS: &str = r#"
         var f = 0; typed.textContent = e.base + DOTS[0];
         timer = setInterval(function() { f = (f + 1) % DOTS.length; typed.textContent = e.base + DOTS[f]; }, DOT_MS);
       } else {
-        typed.classList.add('shimmer');
+        startShimmer();
       }
     }, TYPE_MS);
   }
@@ -195,7 +211,7 @@ pub const JS: &str = r#"
       var f = 0; typed.textContent = e.base + DOTS[0];
       timer = setInterval(function() { f = (f + 1) % DOTS.length; typed.textContent = e.base + DOTS[f]; }, DOT_MS);
     } else {
-      typed.classList.add('shimmer');
+      startShimmer();
     }
   }
   function hide() {

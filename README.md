@@ -9,6 +9,10 @@
 > 感謝原作者 chj 與 Agent Critter Contributors。PawPeek 在其基礎上改名並大幅修改，
 > 原始版權聲明保留於 [LICENSE](LICENSE)。
 
+## Demo
+
+![PawPeek demo](demo.gif)
+
 | 待機 | 工作中 | 放大 |
 |------|--------|------|
 | ![待機](idle.png) | ![工作中](working.png) | ![放大](zoomed.png) |
