@@ -1,16 +1,27 @@
 use serde::Deserialize;
 
+/// hook 資料。Claude Code 與 Copilot（VS Code / Copilot CLI）的相容格式都是 snake_case；
+/// Copilot 的少數事件（如 Notification）混用 camelCase，用 alias 一併接受。
 #[derive(Debug, Deserialize)]
 pub struct HookPayload {
+    #[serde(alias = "hookEventName")]
     pub hook_event_name: Option<String>,
+    /// Copilot 原生格式（camelCase）的事件名稱，例如 `permissionRequest`（沒有 hook_event_name 時才用）
+    #[serde(rename = "hookName")]
+    pub hook_name: Option<String>,
+    #[serde(alias = "sessionId")]
     pub session_id: Option<String>,
     pub event: Option<String>,
 
-    // StopFailure sub-fields
+    // StopFailure sub-fields（Claude Code：字串）；Copilot 的 ErrorOccurred 的 error 可能是物件，用 Value 接
+    #[serde(default, deserialize_with = "string_or_any")]
     pub error: Option<String>,
 
+    // Copilot ErrorOccurred：錯誤能否自動恢復
+    pub recoverable: Option<bool>,
+
     // Notification sub-fields
-    #[serde(rename = "notification_type")]
+    #[serde(rename = "notification_type", alias = "notificationType")]
     pub notification_type: Option<String>,
 
     // PostToolUseFailure sub-fields
@@ -19,6 +30,12 @@ pub struct HookPayload {
 
     // SessionStart sub-fields
     pub source: Option<String>,
+}
+
+/// 字串照收；其他型別（物件、數字…）轉成 JSON 文字，避免整筆資料解析失敗
+fn string_or_any<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.map(|v| match v { serde_json::Value::String(s) => s, other => other.to_string() }))
 }
 
 /// 将 Claude Code hook payload 映射为内部事件字符串。
@@ -30,6 +47,13 @@ pub fn map_hook_event(payload: &HookPayload) -> &'static str {
     // 旧格式：直接 event 字段
     if let Some(ref event) = payload.event {
         return map_legacy_event(event);
+    }
+
+    // Copilot 原生格式（只有 hookName）
+    if payload.hook_event_name.is_none() {
+        if let Some(ref name) = payload.hook_name {
+            return map_copilot_native(name, payload);
+        }
     }
 
     match payload.hook_event_name.as_deref() {
@@ -82,6 +106,30 @@ pub fn map_hook_event(payload: &HookPayload) -> &'static str {
 
         Some("SessionEnd") => "session_end",
 
+        // Copilot（VS Code / Copilot CLI）：沒有 StopFailure，錯誤走 ErrorOccurred
+        Some("ErrorOccurred") => {
+            if payload.recoverable.unwrap_or(true) { "tool_error" } else { "error_final" }
+        }
+
+        _ => "idle",
+    }
+}
+
+/// Copilot 原生格式（camelCase 事件名）的映射。
+/// `permissionRequest` 在 Copilot 是「每次工具呼叫、權限檢查前」都會送（不代表真的跳出確認），所以視為工作中；
+/// 真的在等使用者確認要看 `notification`（permission_prompt / elicitation_dialog）。
+fn map_copilot_native(name: &str, payload: &HookPayload) -> &'static str {
+    match name {
+        "notification" => match payload.notification_type.as_deref() {
+            Some("permission_prompt" | "elicitation_dialog") => "need_confirm",
+            _ => "idle",
+        },
+        "sessionStart" => "session_start",
+        "sessionEnd" => "session_end",
+        "userPromptSubmitted" | "preToolUse" | "postToolUse" | "postToolUseFailure" | "preCompact"
+        | "permissionRequest" | "subagentStart" | "subagentStop" => "running",
+        "agentStop" => "stop",
+        "errorOccurred" => "tool_error",
         _ => "idle",
     }
 }
@@ -156,6 +204,27 @@ mod tests {
     fn legacy_event_field_takes_precedence() {
         assert_eq!(map(r#"{"event":"need_confirm","hook_event_name":"Stop"}"#), "need_confirm");
         assert_eq!(map(r#"{"event":"bogus"}"#), "idle");
+    }
+
+    #[test]
+    fn copilot_payloads() {
+        // 相容格式（Copilot CLI 實測）
+        assert_eq!(map(r#"{"hook_event_name":"SessionStart","session_id":"s","source":"new","initial_prompt":"x"}"#), "session_start");
+        assert_eq!(map(r#"{"hook_event_name":"Stop","session_id":"s","stop_reason":"end_turn","stop_hook_active":false}"#), "stop");
+        // Notification 混用 camelCase
+        let p: HookPayload = serde_json::from_str(r#"{"hook_event_name":"Notification","sessionId":"abc","notification_type":"permission_prompt"}"#).unwrap();
+        assert_eq!(p.session_id.as_deref(), Some("abc"));
+        assert_eq!(map_hook_event(&p), "need_confirm");
+        // ErrorOccurred：error 可能是物件
+        assert_eq!(map(r#"{"hook_event_name":"ErrorOccurred","error":{"message":"boom"},"recoverable":true}"#), "tool_error");
+        assert_eq!(map(r#"{"hook_event_name":"ErrorOccurred","error":"fatal","recoverable":false}"#), "error_final");
+        assert_eq!(map(r#"{"hook_event_name":"ErrorOccurred"}"#), "tool_error");
+        // 原生格式的 permissionRequest（Copilot CLI 實測：每次工具呼叫都會送）→ 維持工作中
+        let p: HookPayload = serde_json::from_str(r#"{"hookName":"permissionRequest","sessionId":"abc","toolName":"powershell","toolInput":{"command":"echo"}}"#).unwrap();
+        assert_eq!(p.session_id.as_deref(), Some("abc"));
+        assert_eq!(map_hook_event(&p), "running");
+        assert_eq!(map(r#"{"hookName":"notification","notification_type":"permission_prompt"}"#), "need_confirm");
+        assert_eq!(map(r#"{"hookName":"agentStop"}"#), "stop");
     }
 
     #[test]

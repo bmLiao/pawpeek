@@ -86,6 +86,34 @@ Claude Code 會把它複製到 `~/.claude/plugins/cache/pawpeek/pawpeek/<版本>
 寵物什麼時候做什麼動作、說什麼話，完整規格在 [docs/BEHAVIOR.md](docs/BEHAVIOR.md)。
 改到狀態、動畫、泡泡、台詞或互動相關的程式前先讀它，改完一併更新。
 
+## 用真的 agent 測試 hook（Claude Code / Copilot 🧪）
+
+`tests/hook-probe/` 是 hook 的實測環境，不會動到已安裝的插件。
+
+**先關掉所有桌寵再測。** 其他開著的 Claude Code 對話的 hook 會一直把已安裝版叫回來，
+造成檔案被占用、事件送到舊版桌寵等問題（腳本會自動關，但測試期間最好也關掉其他對話）。
+
+```powershell
+cargo build
+# Copilot CLI（需先安裝並登入：npm i -g @github/copilot，copilot login）
+powershell -File tests\hook-probe\run-agent.ps1 -Out <資料夾> -Agent copilot -AllowAll
+# Claude Code（停用已安裝的 PawPeek，只載入測試插件）
+powershell -File tests\hook-probe\run-agent.ps1 -Out <資料夾> -Agent claude -Prompt "Reply with just OK."
+```
+
+腳本會把 repo 的 `hooks.json`、啟動器與 `target\<profile>\pawpeek.exe`（含 `WebView2Loader.dll`）組成測試插件，
+以 `-p` 非互動模式跑提示詞，最後列出每次 hook 收到的事件與對應的桌寵狀態。
+
+| 檔案 | 用途 |
+|------|------|
+| `run-agent.ps1` | 跑一輪實測並列出結果 |
+| `pawpeek-log.js` | 整理 `PAWPEEK_HOOK_LOG`（`--raw <事件>` 看原始資料） |
+| `probe.js`、`gen-hooks.js`、`summarize.js`、`hooks/`、`bin/` | 探測插件：每個事件掛多種寫法，記錄 agent 怎麼執行 hook（`-Probe` 使用） |
+
+- 除錯：環境變數 `PAWPEEK_HOOK_LOG=<檔案>` 會讓 `pawpeek --hook` 記下收到的資料與對應事件。
+- 腳本要存成帶 BOM 的 UTF-8，否則 Windows PowerShell 5.1 讀中文註解會壞掉。
+- 新複製的執行檔第一次執行會被防毒掃描（debug 版要好幾秒），可能超過 hook 逾時；腳本會先跑一次暖身。
+
 ## 故障排除
 
 | 問題 | 處理 |

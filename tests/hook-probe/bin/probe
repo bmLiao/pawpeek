@@ -1,0 +1,3 @@
+#!/bin/sh
+# 無副檔名 sh 啟動器（與 PawPeek 的 bin/pawpeek 相同形式），轉交給 probe.js
+exec node "$(dirname "$0")/../probe.js" "$@"

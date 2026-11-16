@@ -1,0 +1,5 @@
+{
+  "name": "hook-probe",
+  "version": "0.0.1",
+  "description": "PawPeek 測試用：記錄 agent 執行 hook 的方式與資料（不影響 agent 行為）"
+}

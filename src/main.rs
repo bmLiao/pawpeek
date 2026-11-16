@@ -5,13 +5,43 @@ use pawpeek::client::{send_event_str, send_raw_json};
 
 use pawpeek::daemon::{run_daemon, start_detached_daemon, fixed_port, is_manual_quit, clear_manual_quit};
 
+/// 除錯用：環境變數 `PAWPEEK_HOOK_LOG` 指向檔案時，記下每次收到的 hook 資料與對應到的事件（測試各家 agent 用）
+fn debug_log(raw: &[u8], parsed: Option<&serde_json::Value>) {
+    let Ok(path) = env::var("PAWPEEK_HOOK_LOG") else { return };
+    let event = parsed
+        .and_then(|v| serde_json::from_value::<pawpeek::hook::HookPayload>(v.clone()).ok())
+        .map(|p| (pawpeek::hook::map_hook_event(&p), p.session_id));
+    let rec = serde_json::json!({
+        "t": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+        "exe": env::current_exe().ok().map(|p| p.display().to_string()),
+        "mapped": event.as_ref().map(|e| e.0),
+        "session": event.and_then(|e| e.1),
+        "input": parsed.cloned().unwrap_or_else(|| serde_json::Value::String(String::from_utf8_lossy(raw).into_owned())),
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write;
+        let _ = writeln!(f, "{rec}");
+    }
+}
+
+/// hook 模式：讀 stdin 的 JSON 轉給桌寵。
+/// 任何情況都正常結束（結束碼 0、stdout 不輸出）：Copilot 的 PreToolUse hook 出錯會擋下工具呼叫。
 fn read_stdin_and_send(port: u16) {
     let mut stdin_bytes = Vec::new();
     if io::stdin().read_to_end(&mut stdin_bytes).is_err() {
+        debug_log(b"(stdin read error)", None);
         return;
     }
+    // 有些 shell（例如 Windows PowerShell 管線）會在開頭加 UTF-8 BOM
+    if stdin_bytes.starts_with(&[0xEF, 0xBB, 0xBF]) { stdin_bytes.drain(..3); }
+    let parsed = serde_json::from_slice::<serde_json::Value>(&stdin_bytes).ok();
+    debug_log(&stdin_bytes, parsed.as_ref());
     if stdin_bytes.is_empty() || stdin_bytes.iter().all(|&b| b.is_ascii_whitespace()) {
         return;
+    }
+    // 桌寵一行讀一筆：重新壓成單行 JSON（agent 送來的可能有換行縮排）
+    if let Some(ref v) = parsed {
+        if let Ok(compact) = serde_json::to_vec(v) { stdin_bytes = compact; }
     }
 
     // 用户手动退出后，只有新会话开始才允许重新启动

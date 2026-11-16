@@ -102,6 +102,23 @@ cd pawpeek
 開一個新的 Claude Code 對話，狀態列出現「桌寵小精靈上線中...」，接著桌寵出現在桌面上即安裝成功。
 也可以用 `/plugin` 查看 `pawpeek@pawpeek` 是否已啟用。
 
+### GitHub Copilot（🧪 測試中）
+
+> **尚未正式支援。** 目前已發布的版本（1.3.2 以前）在 Copilot 上不會動作；以下是開發中的進度，正式支援後會更新這一節。
+
+VS Code 的 Copilot 與 Copilot CLI 都能載入 Claude 格式的插件並執行裡面的 hook，所以 PawPeek 預計直接沿用同一個 repo（`bmLiao/pawpeek`），不另外發布。
+
+| 項目 | 狀態 |
+|------|------|
+| Copilot CLI（Windows） | ✅ 開發版實測可用：開始對話、工作中、結束都會反應，不會擋住工具呼叫 |
+| VS Code Copilot | ⏳ 尚未實測（官方文件說與 Copilot CLI 共用同一套 hook） |
+| 從 VS Code 的插件市集安裝 | ⏳ 尚未確認是否認得本 repo 的 `marketplace.json` |
+| 等待確認狀態 | ⏳ 尚未確認（Copilot 的 `permissionRequest` 每次工具呼叫都會送，不能當成「等你確認」） |
+| macOS | ⏳ 尚未測試 |
+| Copilot CLI 一次性模式（`-p`） | ⚠️ 結束時有時收不到結束事件，寵物會停在工作中直到 30 分鐘逾時 |
+
+預計的安裝方式（正式支援後適用）：VS Code 設定開啟 `chat.plugins.enabled` →「Chat: Open Customizations」→ Configure Marketplaces → 加入 `bmLiao/pawpeek` → 安裝 PawPeek。
+
 ## 使用
 
 | 操作 | 效果 |

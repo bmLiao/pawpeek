@@ -5,5 +5,8 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 case "$(uname -s)" in
   Darwin) exec "$DIR/pawpeek-macos" "$@" ;;
   MINGW*|MSYS*|CYGWIN*|Windows_NT) exec "$DIR/pawpeek.exe" "$@" ;;
-  *) echo "pawpeek: 不支援的作業系統 $(uname -s)" >&2; exit 1 ;;
+  *)
+    # hook 模式一律正常結束：Copilot 的 PreToolUse hook 失敗會擋下工具呼叫
+    case "$1" in --hook) cat >/dev/null; exit 0 ;; esac
+    echo "pawpeek: 不支援的作業系統 $(uname -s)" >&2; exit 1 ;;
 esac

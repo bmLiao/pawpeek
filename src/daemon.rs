@@ -577,6 +577,20 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
 
 pub fn start_detached_daemon(_port: u16) -> bool {
     if is_manual_quit() { return false; }
+    // Windows：子程序會繼承所有可繼承的控制代碼。hook 的 stdin/stdout/stderr 是 agent 給的管道，
+    // 被常駐程式繼承後 agent 等不到管道關閉，會卡到逾時（Copilot 實測：卡 10 秒並跳過 UserPromptSubmit）
+    #[cfg(windows)]
+    unsafe {
+        extern "system" {
+            fn GetStdHandle(n: u32) -> isize;
+            fn SetHandleInformation(h: isize, mask: u32, flags: u32) -> i32;
+        }
+        const HANDLE_FLAG_INHERIT: u32 = 1;
+        for n in [-10i32 as u32, -11i32 as u32, -12i32 as u32] { // STD_INPUT / OUTPUT / ERROR
+            let h = GetStdHandle(n);
+            if h != 0 && h != -1 { SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0); }
+        }
+    }
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap_or_default());
     cmd.arg("--daemon").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)] { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0000_0200 | 0x0000_0008); }

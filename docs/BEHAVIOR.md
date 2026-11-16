@@ -112,6 +112,24 @@ hook 事件的對應在 `src/hook.rs`，多對話合併在 `src/state.rs`，前�
 - 多對話時取最高優先：`等待確認 > 嚴重錯誤 > 工具出錯 > 工作中 > 待機`。
 - 工作中 / 等待確認 / 工具出錯超過 30 分鐘沒有任何事件，自動回到待機（`STALE_TIMEOUT`）；嚴重錯誤保留到下一次操作。
 
+#### GitHub Copilot（🧪 測試中，尚未正式支援）
+
+VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude 格式插件）。大部分事件送的是與 Claude Code 相容的 snake_case 資料，對應與上表相同；差異如下（Copilot CLI 實測）：
+
+| Copilot 事件 | 資料格式 | 狀態 | 說明 |
+|-------------|---------|------|------|
+| `SessionStart`（`source` 為 `new` / `resume`…） | 相容 | 開始（打招呼） | matcher 加了 `new` |
+| `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`PreCompact` | 相容 | 工作中 | |
+| `permissionRequest` | 原生（`hookName`、`sessionId`） | 工作中 | **每次工具呼叫前都會送**，不代表跳出確認框，所以不算等待確認 |
+| `notification`（`permission_prompt` / `elicitation_dialog`） | 原生 | 等待確認 | 預期才是真正的確認框訊號（尚未實測） |
+| `Stop` | 相容 | 待機（完成） | Copilot CLI `-p` 模式結束時偶爾收不到 |
+| `ErrorOccurred` | 相容 | `recoverable` 為 false → 嚴重錯誤；其他 → 工具出錯 | Copilot 沒有 `StopFailure` |
+| `SessionEnd` | 相容 | 結束（告別） | |
+
+- hook 指令：Claude Code 用 `command`（sh 啟動器），Copilot 在 Windows 用 `powershell` 欄位直接執行 `pawpeek.exe`；Copilot 不支援 `args`。
+- Copilot 的 `PreToolUse` hook **失敗會擋下工具呼叫**，所以 hook 模式在任何情況下都要結束碼 0、stdout 不輸出（含不支援的作業系統）。
+- 測試方式見 [PLUGIN.md](../PLUGIN.md)「用真的 agent 測試 hook」。
+
 ### 1.2 前端狀態
 
 | 狀態 | 說明 | 動畫 |
@@ -268,6 +286,7 @@ hook 事件的對應在 `src/hook.rs`，多對話合併在 `src/state.rs`，前�
 
 | 日期 | 變更 |
 |------|------|
+| 2026-11-16 | 🧪 GitHub Copilot 支援（測試中）：§1.1 新增 Copilot 事件對應；hook 指令改成 `command` + `powershell`（不用 `args`）；新增 `ErrorOccurred`；Copilot 的 `permissionRequest` 視為工作中 |
 | 2026-11-16 | 新增 §9 測試版標示：測試版（debug build）在寵物方框底部顯示不消失的 `DEMO`（泡泡外框），正式版不顯示 |
 | 2026-11-16 | 可點範圍只限寵物矩形與顯示中的泡泡，預留的空白處滑鼠穿透到底下視窗（Windows）；拖曳、單擊、雙擊與可點範圍一致（泡泡上也能拖曳、點擊）；新增 §4.1 |
 | 2026-11-11 | 掃光時 emoji 保留原本彩色（原本會變成白色剪影） |
