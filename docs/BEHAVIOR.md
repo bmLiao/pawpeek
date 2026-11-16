@@ -322,6 +322,7 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 
 | 日期 | 變更 |
 |------|------|
+| 2026-11-16 | §6 預設台詞（`assets/messages.json`）從兔子改成通用小動物，拿掉括號裡的動作描述（動作由外觀動畫表現）；`state_label.waving / jumping` 改為「打招呼」「開心中」。已存在的使用者檔案不會被覆蓋 |
 | 2026-11-16 | agent 程序結束（沒送 `SessionEnd`）時，5 秒內把它的對話當作結束（Windows），§1.1 補充 |
 | 2026-11-16 | §6 `messages.json`：檔案不存在就產生；已存在就只補缺的 key、保留使用者的值與順序（原本只在記憶體補，檔案不會更新） |
 | 2026-11-16 | §3.5 F1 面板新增「👋 離開」按鈕（與 `/pawpeek:quit` 相同），面板改為三項；新增 `panel.quit` / `panel.quit_hint` |
