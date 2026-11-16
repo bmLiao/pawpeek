@@ -94,6 +94,8 @@ idle 循環 ──┬─ 自言自語（滿 20 秒後每 10 秒擲骰）→ jump
 | 泡泡・特殊 | 打招呼 / 告別 / 縮放 / 外觀 / 更新提醒 | §3.4；會擋住其他台詞 |
 | 泡泡・暫時 | 進入待機的一句、自言自語、單擊、雙擊 | 3～4 秒後回持久台詞或淡出 |
 | 泡泡・持久 | `state_bubble.*`、拖曳台詞 | 一直顯示到狀態改變 |
+| 泡泡・資料夾 | 第一行 `📁 資料夾` | 完成、等待確認、出錯時，知道是哪個對話就加（§3.1.1） |
+| 面板 | F1 換外觀 / F4 快捷鍵說明 / Esc 離開 | 同鍵開關，一次一個（§3.5） |
 
 ## 1. 狀態
 
@@ -111,7 +113,12 @@ hook 事件的對應在 `src/hook.rs`，多對話合併在 `src/state.rs`，前�
 
 - 多對話時取最高優先：`等待確認 > 嚴重錯誤 > 工具出錯 > 工作中 > 待機`。
 - 工作中 / 等待確認 / 工具出錯超過 30 分鐘沒有任何事件，自動回到待機（`STALE_TIMEOUT`）；嚴重錯誤保留到下一次操作。
-- 對話結束：收到 `SessionEnd`，或（Windows）執行 hook 的 agent 程序已經結束（每 5 秒檢查，見下方 Copilot 一節）。所有對話都結束就告別、離開。
+- 對話結束：收到 `SessionEnd`，或（Windows）執行 hook 的 agent 程序已經結束（每 5 秒檢查，見下方 Copilot 一節）。
+- **只在程式關掉才離開**（Windows）：對話結束不等於離開。寵物記下每個對話的 agent 程序（Claude Code CLI 是 `claude.exe`、VS Code Copilot 是 `copilot-runtime.exe`、Copilot CLI 是 `node.exe`），**沒有對話、而且這些程式都關掉了**才告別、離開（`StateMachine::update_exit`、`lingering`）。
+  - 例：VS Code 開新聊天（舊聊天送 `SessionEnd`）→ 不離開；關掉 VS Code → 5 秒內離開。
+  - 例：Claude Code CLI 打 `/exit` 或一次性模式（`-p`）跑完 → `claude.exe` 本身結束，算程式關掉 → 離開。
+  - 找不到 agent 的對話（非 Windows、程序鏈斷掉）結束時，維持「對話數變 0 就離開」。
+  - 手動離開：Esc 面板的「👋 離開」或 `/pawpeek:quit`。
 
 #### GitHub Copilot（🧪 測試中，尚未正式支援）
 
@@ -128,7 +135,7 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 | `SessionEnd` | 相容 | 結束（告別） | VS Code：開新聊天時會對被取代的舊聊天送出 |
 
 - VS Code Copilot（從本機資料夾載入插件實測）：`SessionStart` → `UserPromptSubmit` → `PreToolUse` / `permissionRequest` / `PostToolUse` → `Stop`，完成時會回到待機，動作切換與 Claude Code 相同。
-- **agent 結束就當作對話結束**（Windows）：hook 會附上執行它的 agent 程序 PID（往上跳過 powershell、cmd、bash 等殼層，例如 `claude.exe`、VS Code 的 `copilot-runtime.exe`、Copilot CLI 的 `node.exe`）。桌寵記下 PID 與啟動時間，**每 5 秒檢查一次**，程序不在了就把它的對話當作收到 `SessionEnd`（全部結束就照常告別、離開）。關掉 VS Code 或終端機時常常不會送 `SessionEnd`，靠這個收尾。見 `src/agent.rs`、`StateMachine::end_dead_agents`。
+- **agent 結束就當作對話結束**（Windows）：hook 會附上執行它的 agent 程序 PID（往上跳過 powershell、cmd、bash 等殼層，例如 `claude.exe`、VS Code 的 `copilot-runtime.exe`、Copilot CLI 的 `node.exe`）。桌寵記下 PID 與啟動時間，**每 5 秒檢查一次**，程序不在了就把它的對話當作收到 `SessionEnd`；已經沒有對話、只剩程式開著的 agent 也一起檢查，全部關掉才告別、離開（見上方「只在程式關掉才離開」）。關掉 VS Code 或終端機時常常不會送 `SessionEnd`，靠這個收尾。見 `src/agent.rs`、`StateMachine::end_dead_agents`。
 - **結束事件不啟動桌寵**：桌寵沒在跑時收到 `SessionEnd`，hook 直接忽略（沒在跑就代表沒有要結束的對話）。否則會為了轉交結束事件把桌寵叫起來，它發現沒有對話又馬上離開，多閃一次。見 `src/main.rs` `read_stdin_and_send`。
 
 - hook 指令：Claude Code 用 `command`（sh 啟動器），Copilot 在 Windows 用 `powershell` 欄位直接執行 `pawpeek.exe`；Copilot 不支援 `args`。
@@ -183,13 +190,29 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 | 進入的狀態 | 說什麼 | 層 |
 |-----------|-------|----|
 | 工作中 / 等待確認 / 工具出錯 / 嚴重錯誤 | `state_bubble.<狀態>` | 持久 |
-| 待機（從工作中回來） | `done` 隨機一句 | 暫時 4 秒 |
+| 待機（從工作中回來） | `done` 隨機一句（有資料夾名稱時第一行加 `folder.tag`，見 §3.1.1） | 暫時 4 秒 |
 | 待機（從其他狀態回來） | `chatter.idle` 隨機一句 | 暫時 4 秒 |
 | 待機（剛啟動） | 不說（打招呼會接著出現） | — |
 | 拖曳中 | `chatter.dragging` 隨機一句 | 持久 |
 | 拖曳中 → 待機 | 不說（拖曳屬於待機底下的動作） | — |
 
 - 切換狀態時，正在說的暫時台詞立刻停下，自言自語重新計時。
+
+#### 3.1.1 顯示是哪個資料夾的對話
+
+多個對話（例如 VS Code 與終端機各開一個）同時在跑時，用來分辨是哪個專案完成或在等你。
+
+- 來源：hook 資料的 `cwd`，取最後一層資料夾名稱（`C:\work\pawpeek` → `pawpeek`）。每個對話各自記住（`src/state.rs` `folder_name`）。
+- **哪個對話**：合併狀態改變的那一刻決定（`StateMachine::update_current_state`）：
+  1. 觸發這次事件的對話正處於新狀態 → 用它（例如 B 要求確認 → B）。
+  2. 否則處於新狀態的對話只有一個 → 用那個（例如 B 完成後回到工作中，工作中的是 A → A）。
+  3. 都分不出來（例如逾時一起回到待機、好幾個對話同狀態）或沒有 `cwd` → 不顯示。
+- **顯示在哪**：泡泡**第一行**加 `folder.tag`（預設 `📁 {folder}`），只用在：
+  - 完成：工作中 → 待機的 `done` 那一句。
+  - 等待確認、工具出錯、嚴重錯誤的持久台詞（自言自語 / 單擊的暫時台詞蓋過後，回到持久台詞時仍帶著）。
+  - 工作中、其他回到待機的情況不顯示。
+- `folder.tag` 清空就完全不顯示。
+- 只顯示文字，**一律不搶焦點、不切換視窗**。
 
 ### 3.2 自言自語：停留在同一個狀態才會說（不限待機）
 
@@ -207,6 +230,8 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 | 雙擊 | 任何狀態；會取消等待中的單擊；特殊泡泡顯示中不說 | `dblclick.<狀態>`（對話數與狀態），暫時 3 秒 | 無 |
 | `[` / `]` 縮放 | 點過寵物取得焦點後；在 F1 面板輸入框打字時不算 | `zoom.changed`，特殊 1.5 秒 | 無 |
 | F1 | 點過寵物取得焦點後 | 不說；開關換外觀面板，見 §3.5 | 無 |
+| F4 | 點過寵物取得焦點後 | 不說；開關快捷鍵說明，見 §3.5 | 無 |
+| Esc | 點過寵物取得焦點後；輸入法選字中不算 | 不說；其他面板開著時關閉它，否則開關離開面板，見 §3.5 | 無 |
 | 拖曳 | 見 §4 | | |
 
 ### 3.4 特殊泡泡
@@ -214,7 +239,7 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 | 內容 | 觸發 | 時間 |
 |------|------|------|
 | 打招呼 `greeting` | 對話數從 0 變多，或待機中有新對話加入 | 3 秒 |
-| 告別 `goodbye` | 對話數變成 0（嚴重錯誤時不說） | 4 秒 |
+| 告別 `goodbye` | 要離開時：沒有對話、程式也都關掉（§1.1；嚴重錯誤時不說） | 4 秒 |
 | 縮放 `zoom.changed` | `[` / `]` | 1.5 秒 |
 | 外觀：讀圖失敗 `skin.image_error` | 啟動時 `PET_SKIN` 圖片讀不到 | 4 秒 |
 | 外觀：下載中 / 完成 / 找不到 / 網路錯誤 | 從 Petdex 下載外觀 | 5 / 3 / 4 / 4 秒 |
@@ -224,17 +249,33 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 
 - 新的特殊泡泡會直接取代正在顯示的特殊泡泡。
 
-### 3.5 F1 換外觀面板
+### 3.5 面板（F1 換外觀 / F4 快捷鍵說明 / Esc 離開）
 
-- **開關**：點過寵物取得焦點後按 F1 打開；再按 F1、按 ✕ 或在輸入框按 Esc 關閉。
-- **內容**只有三項（沒有縮放）：
-  - 輸入框：輸入 Petdex 寵物名稱（也接受圖片路徑或 `default`），按 Enter 送出，**送出後面板立刻關閉**；空白不送出。
-  - 「匯入自訂外觀…」按鈕：跳出選檔視窗（與 `/skin` 相同流程），**按下後面板關閉**。
-  - 「👋 離開」按鈕：讓寵物離開，與 `/pawpeek:quit` 相同（不說告別、立刻結束；之後只有新對話開始 `SessionStart` 才會再出現）。Copilot 沒有指令可用，靠這個關閉。
+共通規則：
+
+- **開關**：點過寵物取得焦點後按對應的鍵打開，**同一個鍵再按一次關閉**。面板上**沒有 ✕ 關閉鈕**。
+- **一次只開一個**：開著一個時按另一個面板的鍵，直接換成那一個。
+- **Esc**：F1 / F4 面板開著時按 Esc 是關閉它（不會接著開離開面板）；沒有面板時打開離開面板；離開面板開著時再按關閉。
 - **位置**：放在泡泡的位置（寵物上方；靠近螢幕頂端時在下方），外框與泡泡相同。面板開著時泡泡先藏起來，關閉後照常顯示。
 - 面板算在可點範圍內（§4.1），但在面板上按不會拖曳、也不觸發單擊 / 雙擊。
+- 實作：前端 `togglePanel('skin' | 'help' | 'quit')`（`src/webview.rs`，`body` 的 `data-panel` 決定顯示哪個）。
+
+**F1 換外觀**（只有兩項，沒有縮放、沒有離開）：
+
+- 輸入框：輸入 Petdex 寵物名稱（也接受圖片路徑或 `default`），按 Enter 送出，**送出後面板立刻關閉**；空白不送出。打開時游標自動在輸入框。
+- 「匯入自訂外觀…」按鈕：跳出選檔視窗（與 `/skin` 相同流程），**按下後面板關閉**。
 - **輸入名稱的結果**：本機已有就直接換；沒有就從 Petdex 下載，`skin.downloading` 一直顯示到下載結束，成功顯示 `skin.installed`。找不到、網路錯誤、圖片不符時**保留目前外觀、不改 `.env`**，顯示 `panel.*` 提示 4 秒。
-- 實作：前端 `toggleSkinPanel`（`src/webview.rs`），送 `setSkin` / `importSkin` 給主程式；換外觀在 `src/daemon.rs` `set_skin_from_panel`。
+- 送 `setSkin` / `importSkin` 給主程式；換外觀在 `src/daemon.rs` `set_skin_from_panel`。
+
+**F4 快捷鍵說明**：
+
+- 標題 `help.title`，內容 `help.text`（多行文字，列出單擊、雙擊、拖曳、`[` / `]`、F1、F4、Esc），只有說明、沒有按鈕。
+
+**Esc 離開**：
+
+- 標題 `panel.quit_title`，一個「👋 離開」按鈕（`panel.quit`，滑過提示 `panel.quit_hint`）。
+- 按下：讓寵物離開，與 `/pawpeek:quit` 相同（不說告別、立刻結束；之後只有新對話開始 `SessionStart` 才會再出現）。Copilot 沒有指令可用，靠這個關閉。
+- 只按 Esc 不會離開，一定要點按鈕。
 
 ## 4. 拖曳
 
@@ -290,7 +331,9 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 | `zoom.changed` | 縮放提示（`{scale}`） |
 | `update.available` | 更新提醒（`{latest}`、`{current}`） |
 | `skin.*` / `import.*` | 外觀相關提示與對話框 |
-| `panel.*` | F1 換外觀面板的文字（輸入框提示、按鈕）與失敗提示 |
+| `panel.*` | F1 換外觀面板的文字（輸入框提示、按鈕）與失敗提示；`quit_title` / `quit` / `quit_hint` 是 Esc 離開面板 |
+| `help.title / text` | F4 快捷鍵說明 |
+| `folder.tag` | 資料夾名稱（`{folder}`），放在完成 / 等待確認 / 出錯泡泡的第一行；清空不顯示（§3.1.1） |
 | `state_label.*` | 雙擊時 `{state}` 顯示的狀態名稱 |
 
 舊版的 `idle`、`click_head`、`click_body`、`drag` 已併入 `chatter`，不再讀取。
@@ -322,6 +365,8 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 
 | 日期 | 變更 |
 |------|------|
+| 2026-11-16 | §1.1 改為**只在程式關掉才離開**：對話結束（例如 VS Code 開新聊天）但 agent 程式還開著就不離開，沒有對話且程式都關掉才告別；原本是對話數變 0 就離開（從第一版沿用，2026-11-16 加上 agent 結束偵測後更容易消失）；§3.4 告別時機同步修改 |
+| 2026-11-16 | 新增 §3.1.1：完成、等待確認、出錯的泡泡第一行顯示對話的資料夾名稱（hook 的 `cwd`，`folder.tag`），不搶焦點；§3.5 改為三個面板：F1 換外觀拿掉「離開」、新增 F4 快捷鍵說明、Esc 離開面板，同鍵再按關閉（拿掉 ✕ 關閉鈕）、一次只開一個；新增 `folder.tag`、`help.*`、`panel.quit_title`；`panel.close` 不再使用 |
 | 2026-11-16 | §6 預設台詞（`assets/messages.json`）從兔子改成通用小動物，拿掉括號裡的動作描述（動作由外觀動畫表現）；`state_label.waving / jumping` 改為「打招呼」「開心中」。已存在的使用者檔案不會被覆蓋 |
 | 2026-11-16 | agent 程序結束（沒送 `SessionEnd`）時，5 秒內把它的對話當作結束（Windows），§1.1 補充 |
 | 2026-11-16 | §6 `messages.json`：檔案不存在就產生；已存在就只補缺的 key、保留使用者的值與順序（原本只在記憶體補，檔案不會更新） |

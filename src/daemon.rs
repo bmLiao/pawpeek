@@ -15,7 +15,8 @@ const FIXED_PORT: u16 = 47390;
 
 #[derive(Debug, Clone)]
 pub enum UiCommand {
-    SetState(LightState),
+    /// 合併狀態，以及造成這個狀態的對話的資料夾名稱（分不出來為 None）
+    SetState(LightState, Option<String>),
     /// 換上新的 spritesheet（例如 Petdex 下載完成）
     SetSprite(Vec<u8>),
     /// 外部指令：匯入自訂外觀（`pawpeek --import-skin`）
@@ -445,11 +446,12 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
     let proxy_poll = proxy.clone();
     std::thread::spawn(move || {
         let mut prev_count = 0u32;
+        let mut prev_exit = false;
         let mut tick: u64 = 0;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
             tick += 1;
-            let (cur, count) = {
+            let (cur, folder, count, exiting) = {
                 let mut s = state_poll.lock().unwrap_or_else(|e| e.into_inner());
                 // 每分鐘檢查一次失聯的對話（終端機被直接關掉時不會送 SessionEnd）
                 if tick % 60 == 0 {
@@ -460,20 +462,21 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                     let n = s.end_dead_agents(crate::agent::is_alive);
                     if n > 0 { debug_note(&format!("agent 已結束，結束 {n} 個對話")); }
                 }
-                (s.current_state(), s.session_count())
+                (s.current_state(), s.current_folder(), s.session_count(), s.should_exit())
             };
-            let _ = proxy_poll.send_event(UiCommand::SetState(cur));
+            let _ = proxy_poll.send_event(UiCommand::SetState(cur, folder));
             let _ = proxy_poll.send_event(UiCommand::SessionCount(count));
 
-            // 检测会话数变化：打招呼 / 告别
+            // 打招呼：對話數變多（待機中）；告別：要離開了（沒有對話、程式也都關掉，見 StateMachine::update_exit）
             if count > 0 && prev_count == 0 && cur == LightState::Idle {
                 let _ = proxy_poll.send_event(UiCommand::Greeting);
             } else if count > prev_count && prev_count > 0 && cur == LightState::Idle {
                 let _ = proxy_poll.send_event(UiCommand::Greeting);
-            } else if count == 0 && prev_count > 0 && !matches!(cur, LightState::ErrorFinal) {
+            } else if exiting && !prev_exit && count == 0 && !matches!(cur, LightState::ErrorFinal) {
                 let _ = proxy_poll.send_event(UiCommand::Goodbye);
             }
             prev_count = count;
+            prev_exit = exiting;
         }
     });
 
@@ -500,14 +503,15 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
 
         match event {
             Event::UserEvent(cmd) => match cmd {
-                UiCommand::SetState(state) => {
+                UiCommand::SetState(state, folder) => {
                     if last_state == Some(state) { return; }
                     let prev = last_state.map(state_name);
                     last_state = Some(state);
-                    // 動畫與說話（進入狀態那一句、持久台詞、自言自語）都由前端依狀態處理
+                    // 動畫與說話（進入狀態那一句、持久台詞、自言自語、資料夾名稱）都由前端依狀態處理
                     if let Some(ref wv) = webview {
                         let prev_js = prev.map(|p| format!("'{p}'")).unwrap_or_else(|| "null".into());
-                        let _ = wv.evaluate_script(&format!("onHookState('{}',{})", state_name(state), prev_js));
+                        let folder_js = folder.as_deref().map(js_str).unwrap_or_else(|| "null".into());
+                        let _ = wv.evaluate_script(&format!("onHookState('{}',{},{})", state_name(state), prev_js, folder_js));
                     }
                 }
                 UiCommand::SetSprite(bytes) => {

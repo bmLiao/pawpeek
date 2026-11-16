@@ -134,8 +134,8 @@ pub const JS: &str = r#"
   window.syncWindowSize = function() {
     var b = window.__baseSize, s = window.__petScale || 1;
     var bw = Math.ceil(RESERVE_W * s), bh = Math.ceil(RESERVE_H * s);
-    // 量顯示中的泡泡與 F1 換外觀面板（webview.rs），超出預留才放大
-    [visible ? el : null, document.getElementById('skin-panel')].forEach(function(n) {
+    // 量顯示中的泡泡與面板（F1 / F4 / Esc，webview.rs），超出預留才放大
+    [visible ? el : null].concat(Array.from(document.querySelectorAll('.pp-panel'))).forEach(function(n) {
       if (!n || !n.offsetWidth) return;
       var r = n.getBoundingClientRect();
       reserveW = Math.max(reserveW, Math.ceil(r.width) + 16);

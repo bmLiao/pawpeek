@@ -31,6 +31,9 @@ pub struct HookPayload {
     // SessionStart sub-fields
     pub source: Option<String>,
 
+    /// 對話的工作資料夾（泡泡顯示最後一層的名稱，分辨是哪個專案的對話）
+    pub cwd: Option<String>,
+
     /// PawPeek 自己加的：執行 hook 的 agent 程序 PID（見 agent.rs；agent 結束就把對話當作結束）
     pub pawpeek_agent_pid: Option<u32>,
 }

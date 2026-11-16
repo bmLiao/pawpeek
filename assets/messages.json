@@ -114,6 +114,13 @@
   "zoom": {
     "changed": "🔍 調整成 {scale} 倍"
   },
+  "folder": {
+    "tag": "📁 {folder}"
+  },
+  "help": {
+    "title": "⌨️ 快捷鍵",
+    "text": "單擊：說一句話\n雙擊：對話數與狀態\n拖曳：移動位置\n[ / ]：縮小 / 放大\nF1：換外觀\nF4：快捷鍵說明\nEsc：讓寵物離開\n（先點一下寵物，按鍵才有作用；同一個鍵再按一次關閉）"
+  },
   "update": {
     "available": "✨ 有新版 {latest} 囉（目前 {current}）！\nClaude Code：/plugin update pawpeek@pawpeek\nVS Code Copilot：執行「Chat: Update Plugins」"
   },
@@ -128,7 +135,7 @@
   "panel": {
     "placeholder": "Petdex 寵物名稱，按 Enter",
     "import": "📁 匯入自訂外觀…",
-    "close": "關閉（F1）",
+    "quit_title": "要讓我先離開嗎？",
     "quit": "👋 離開",
     "quit_hint": "讓寵物離開（下次開新對話時會再出現）",
     "not_found": "🤔 Petdex 上找不到「{name}」耶，外觀沒有換喔",

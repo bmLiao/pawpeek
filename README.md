@@ -113,7 +113,7 @@ VS Code 的 Copilot 與 Copilot CLI 都能載入 Claude 格式的插件並執行
 | Copilot CLI（Windows） | ✅ 開發版實測可用：開始對話、工作中、結束都會反應，不會擋住工具呼叫；寵物常駐不會被關掉 |
 | VS Code Copilot（Windows） | ✅ 開發版實測可用（從本機資料夾載入）：開始、工作中、完成（`Stop`）、結束都會反應；需開啟 `chat.plugins.enabled`，**和 Claude Code 是各裝各的** |
 | 從 VS Code 的插件市集安裝 | ✅ 認得本 repo 的 `marketplace.json`，加入市集後可看到並安裝 PawPeek；VS Code 會沿用之前抓過的那份 repo，新版推出後要執行「Chat: Update Plugins」才會看到 |
-| 換外觀 / 讓寵物離開 | Copilot 沒有 `/set-skin`、`/skin`、`/quit` 指令（不讀 `commands/`），改用寵物的 **F1 面板** |
+| 換外觀 / 讓寵物離開 | Copilot 沒有 `/set-skin`、`/skin`、`/quit` 指令（不讀 `commands/`），改用寵物的 **F1 面板**換外觀、**Esc** 讓寵物離開 |
 | 等待確認狀態 | ⏳ 尚未確認（Copilot 的 `permissionRequest` 每次工具呼叫都會送，不能當成「等你確認」） |
 | macOS | ⏳ 尚未測試 |
 | Copilot CLI 一次性模式（`-p`） | ⚠️ 結束時有時收不到結束事件，寵物會停在工作中直到 30 分鐘逾時 |
@@ -132,7 +132,11 @@ VS Code 會把插件複製到 `%APPDATA%\Code\agentPlugins\` 再執行，改了�
 | 雙擊寵物 | 顯示目前對話數與狀態 |
 | 拖曳 | 移動位置；待機時按住就會說話，並依滑鼠左右方向轉身，放開後動作播完才回待機 |
 | `[` / `]` | 縮小 / 放大（0.5x ~ 1.5x，點一下寵物後可用） |
-| F1 | 開關面板：輸入 Petdex 名稱按 Enter 換外觀、「匯入自訂外觀…」、「👋 離開」讓寵物離開（點一下寵物後可用） |
+| F1 | 開關換外觀面板：輸入 Petdex 名稱按 Enter 換外觀、「匯入自訂外觀…」 |
+| F4 | 開關快捷鍵說明 |
+| Esc | 開關離開面板，按「👋 離開」讓寵物離開（下次開新對話會再出現）；F1 / F4 面板開著時是關閉它 |
+
+鍵盤操作要先點一下寵物才有作用，同一個鍵再按一次就關閉。寵物在執行對話的程式（Claude Code、VS Code、Copilot CLI）都關掉後才會自己離開，只結束單一對話（例如 VS Code 開新聊天）不會離開。完成、等待確認或出錯的泡泡第一行會顯示是哪個資料夾的對話（例如 `📁 pawpeek`），同時開好幾個對話時方便分辨；不會切換或搶走視窗焦點。
 
 ### 斜線指令
 
