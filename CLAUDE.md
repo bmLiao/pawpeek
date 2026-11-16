@@ -9,6 +9,7 @@
   - 動畫、泡泡顯示與說話時機（`src/bubble.rs`、`src/webview.rs` 的 `CONTROLLER_JS` / `STATES` / `play`）
   - 拖曳、單擊、雙擊、縮放、自言自語、打招呼 / 告別、更新提醒、外觀提示
   - 台詞欄位（`assets/messages.json`）
+- **新增台詞 key**：加進 `assets/messages.json` 即可。使用者本地的 `文件/.pawpeek/messages.json` 啟動時會自動補上缺的 key（已有的值不覆蓋、不整個還原；沒有檔案才整份產生），規則見 `docs/BEHAVIOR.md` §6。
 - **改完要同步**：行為有變動就更新 `docs/BEHAVIOR.md` 對應章節，並在「變更紀錄」加一行。
 - **衝突時先問**：使用者的新要求與文件規則衝突時，先指出衝突並確認，再同時改程式與文件。
 

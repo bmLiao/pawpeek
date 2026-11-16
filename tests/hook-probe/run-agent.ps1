@@ -18,9 +18,15 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path "$PSScriptRoot\..\..").Path
 
+# 只關測試插件的桌寵（$plugin\bin 底下的執行檔與它的 WebView2），不動使用者正在用的已安裝版
+# 測試版（debug build）預設用 47391 埠、顯示 DEMO，可以和已安裝的正式版（47390）同時開
 function Stop-Pets {
-  Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'pawpeek.exe' -or ($_.Name -eq 'msedgewebview2.exe' -and $_.CommandLine -like '*pawpeek*') } |
-    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  if (-not $plugin) { return }
+  $bin = Join-Path $plugin "bin"
+  Get-CimInstance Win32_Process | Where-Object {
+    ($_.Name -eq 'pawpeek.exe' -and $_.ExecutablePath -like "$bin\*") -or
+    ($_.Name -eq 'msedgewebview2.exe' -and $_.CommandLine -like "*$bin\pawpeek.exe.WebView2*")
+  } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   Start-Sleep -Milliseconds 800
 }
 New-Item -ItemType Directory -Force $Out | Out-Null

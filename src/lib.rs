@@ -3,6 +3,7 @@
 #[cfg(target_os = "macos")]
 #[macro_use] extern crate objc;
 
+pub mod agent;
 pub mod assets;
 pub mod bubble;
 pub mod client;

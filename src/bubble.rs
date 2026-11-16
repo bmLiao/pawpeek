@@ -134,11 +134,13 @@ pub const JS: &str = r#"
   window.syncWindowSize = function() {
     var b = window.__baseSize, s = window.__petScale || 1;
     var bw = Math.ceil(RESERVE_W * s), bh = Math.ceil(RESERVE_H * s);
-    if (visible) {
-      var r = el.getBoundingClientRect();
+    // 量顯示中的泡泡與 F1 換外觀面板（webview.rs），超出預留才放大
+    [visible ? el : null, document.getElementById('skin-panel')].forEach(function(n) {
+      if (!n || !n.offsetWidth) return;
+      var r = n.getBoundingClientRect();
       reserveW = Math.max(reserveW, Math.ceil(r.width) + 16);
       reserveH = Math.max(reserveH, Math.ceil(r.height));
-    }
+    });
     var w = Math.max(b.w, bw, reserveW);
     var h = b.h + Math.max(bh, reserveH) + Math.ceil(12 * s);
     var key = w + 'x' + h + '/' + b.w + 'x' + b.h;

@@ -30,6 +30,9 @@ pub struct HookPayload {
 
     // SessionStart sub-fields
     pub source: Option<String>,
+
+    /// PawPeek 自己加的：執行 hook 的 agent 程序 PID（見 agent.rs；agent 結束就把對話當作結束）
+    pub pawpeek_agent_pid: Option<u32>,
 }
 
 /// 字串照收；其他型別（物件、數字…）轉成 JSON 文字，避免整筆資料解析失敗

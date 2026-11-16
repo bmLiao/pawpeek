@@ -130,7 +130,7 @@
     "changed": "🔍 調整成 {scale} 倍"
   },
   "update": {
-    "available": "✨ 有新版 {latest} 囉（目前 {current}）！在 Claude Code 輸入 /plugin update pawpeek@pawpeek 就能更新～"
+    "available": "✨ 有新版 {latest} 囉（目前 {current}）！\nClaude Code：/plugin update pawpeek@pawpeek\nVS Code Copilot：執行「Chat: Update Plugins」"
   },
   "skin": {
     "downloading": "🐰 {name} 蹦蹦蹦馬上就來囉……",
@@ -139,6 +139,17 @@
     "not_found": "🤔 找不到「{name}」耶，是不是打錯字了？先用預設造型喔",
     "network_error": "🥺 網路好像怪怪的，下載不了，先用預設造型喔",
     "image_error": "🥺 讀不到圖片「{name}」，先用預設造型喔"
+  },
+  "panel": {
+    "placeholder": "Petdex 寵物名稱，按 Enter",
+    "import": "📁 匯入自訂外觀…",
+    "close": "關閉（F1）",
+    "quit": "👋 離開",
+    "quit_hint": "讓寵物離開（下次開新對話時會再出現）",
+    "not_found": "🤔 Petdex 上找不到「{name}」耶，外觀沒有換喔",
+    "network_error": "🥺 網路好像怪怪的，下載不了，外觀沒有換喔",
+    "bad_image": "🥺「{name}」不能當外觀（要 png / webp，8 欄、9 或 11 列），外觀沒有換喔",
+    "save_error": "🥺 存檔失敗：{err}"
   },
   "import": {
     "title": "PawPeek 匯入外觀",

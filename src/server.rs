@@ -70,5 +70,11 @@ fn handle_client(stream: TcpStream, state: Arc<Mutex<StateMachine>>, on_cmd: Cmd
 
         let mut sm = state.lock().unwrap_or_else(|e| e.into_inner());
         sm.handle_event(&session_id, event);
+        // 記下這個對話的 agent 程序（第一次看到時才查啟動時間）
+        if let Some(pid) = payload.pawpeek_agent_pid {
+            if event != "session_end" && !sm.has_agent(&session_id, pid) {
+                sm.set_agent(&session_id, pid, crate::agent::start_time(pid));
+            }
+        }
     }
 }

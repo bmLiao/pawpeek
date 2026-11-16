@@ -90,8 +90,9 @@ Claude Code 會把它複製到 `~/.claude/plugins/cache/pawpeek/pawpeek/<版本>
 
 `tests/hook-probe/` 是 hook 的實測環境，不會動到已安裝的插件。
 
-**先關掉所有桌寵再測。** 其他開著的 Claude Code 對話的 hook 會一直把已安裝版叫回來，
-造成檔案被占用、事件送到舊版桌寵等問題（腳本會自動關，但測試期間最好也關掉其他對話）。
+**測試版與已安裝版分開跑。** 測試版（debug build，顯示 DEMO）預設用 47391 埠，已安裝的正式版用 47390，
+兩隻可以同時開著、各收各的事件，不用關掉其他 Claude Code 對話。腳本只會關掉測試插件自己的桌寵。
+（要測 release 版時，用 `PAWPEEK_PORT=47391` 讓它也走另一個埠，否則事件會被已安裝版收走。）
 
 ```powershell
 cargo build
@@ -111,6 +112,9 @@ powershell -File tests\hook-probe\run-agent.ps1 -Out <資料夾> -Agent claude -
 | `probe.js`、`gen-hooks.js`、`summarize.js`、`hooks/`、`bin/` | 探測插件：每個事件掛多種寫法，記錄 agent 怎麼執行 hook（`-Probe` 使用） |
 
 - 除錯：環境變數 `PAWPEEK_HOOK_LOG=<檔案>` 會讓 `pawpeek --hook` 記下收到的資料與對應事件。
+  測試版（debug build）沒設這個變數時，也會記到 `<文件>/.pawpeek/hook-debug.jsonl`（VS Code Copilot 的 hook 繼承 VS Code 的環境變數，沒辦法另外設）。
+- VS Code Copilot：在 VS Code 設定加 `"chat.plugins.enabled": true` 與 `"chat.pluginLocations": { "<測試插件資料夾>": true }`，再用 `code chat -r -m agent "<提示詞>"` 送訊息。
+  VS Code 會把插件複製到 `%APPDATA%\Code\agentPlugins\` 執行，換了執行檔要執行「Chat: Update Plugins」或重新載入視窗才會重新複製。
 - 腳本要存成帶 BOM 的 UTF-8，否則 Windows PowerShell 5.1 讀中文註解會壞掉。
 - 新複製的執行檔第一次執行會被防毒掃描（debug 版要好幾秒），可能超過 hook 逾時；腳本會先跑一次暖身。
 

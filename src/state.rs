@@ -40,6 +40,8 @@ impl LightState {
 struct Session {
     state: LightState,
     last_event: Instant,
+    /// 執行這個對話 hook 的 agent 程序：(PID, 啟動時間)。agent 結束就把對話當作結束（見 agent.rs）
+    agent: Option<(u32, Option<u64>)>,
 }
 
 #[derive(Debug)]
@@ -81,7 +83,7 @@ impl StateMachine {
                     self.session_counter += 1;
                     self.sessions.insert(
                         session_id.to_string(),
-                        Session { state: LightState::Idle, last_event: Instant::now() },
+                        Session { state: LightState::Idle, last_event: Instant::now(), agent: None },
                     );
                 }
                 // is_new=false：running 比 session_start 先到，
@@ -133,9 +135,34 @@ impl StateMachine {
         }
         let session = self.sessions
             .entry(session_id.to_string())
-            .or_insert(Session { state: LightState::Idle, last_event: Instant::now() });
+            .or_insert(Session { state: LightState::Idle, last_event: Instant::now(), agent: None });
         session.state = state;
         session.last_event = Instant::now();
+    }
+
+    /// 這個對話是否已記錄為 `pid` 這個 agent
+    pub fn has_agent(&self, session_id: &str, pid: u32) -> bool {
+        self.sessions.get(session_id).and_then(|s| s.agent).map(|(p, _)| p) == Some(pid)
+    }
+
+    /// 記下對話的 agent 程序（對話不存在就不記）
+    pub fn set_agent(&mut self, session_id: &str, pid: u32, start: Option<u64>) {
+        if let Some(s) = self.sessions.get_mut(session_id) {
+            s.agent = Some((pid, start));
+        }
+    }
+
+    /// agent 程序已結束的對話一律當作收到 SessionEnd（關掉 VS Code / 終端機時常常不送）。
+    /// `alive(pid, 啟動時間)` 判斷程序是否還在。回傳結束了幾個對話。
+    pub fn end_dead_agents(&mut self, alive: impl Fn(u32, Option<u64>) -> bool) -> usize {
+        let dead: Vec<String> = self.sessions.iter()
+            .filter(|(_, s)| matches!(s.agent, Some((pid, start)) if !alive(pid, start)))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &dead {
+            self.handle_event(id, "session_end");
+        }
+        dead.len()
     }
 
     /// 把超過 `timeout` 沒有事件、仍停在工作中 / 等待確認 / 工具出錯的對話重置為閒置。
@@ -215,6 +242,36 @@ mod tests {
         sm.handle_event("s1", "session_end");
         assert_eq!(sm.session_count(), 0);
         assert!(sm.should_exit());
+    }
+
+    #[test]
+    fn dead_agent_ends_its_sessions() {
+        let mut sm = StateMachine::new();
+        sm.handle_event("vscode-a", "running");
+        sm.handle_event("vscode-b", "session_start");
+        sm.handle_event("claude", "session_start");
+        sm.set_agent("vscode-a", 10, Some(1));
+        sm.set_agent("vscode-b", 10, Some(1));
+        sm.set_agent("claude", 20, Some(2));
+        assert!(sm.has_agent("vscode-a", 10));
+        // VS Code（pid 10）關掉：它的兩個對話結束，Claude 的留著
+        assert_eq!(sm.end_dead_agents(|pid, _| pid != 10), 2);
+        assert_eq!(sm.session_count(), 1);
+        assert!(!sm.should_exit());
+        assert_eq!(sm.current_state(), LightState::Idle);
+        // Claude 也關掉 → 全部結束，寵物離開
+        assert_eq!(sm.end_dead_agents(|_, _| false), 1);
+        assert_eq!(sm.session_count(), 0);
+        assert!(sm.should_exit());
+    }
+
+    #[test]
+    fn sessions_without_agent_are_not_ended() {
+        // 舊版 hook 或非 Windows：沒有 agent 資訊的對話只靠 SessionEnd / 逾時
+        let mut sm = StateMachine::new();
+        sm.handle_event("s", "session_start");
+        assert_eq!(sm.end_dead_agents(|_, _| false), 0);
+        assert_eq!(sm.session_count(), 1);
     }
 
     #[test]

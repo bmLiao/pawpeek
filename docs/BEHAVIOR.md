@@ -89,7 +89,7 @@ idle 循環 ──┬─ 自言自語（滿 20 秒後每 10 秒擲骰）→ jump
 | 動畫 | 插入小動作 | 待機自言自語 5 秒、待機單擊 2 秒 |
 | 外觀 | 水平翻轉 | 拖曳中往左移動 ≥6px；離開拖曳取消 |
 | 外觀 | 縮放 | `[` / `]` |
-| 外觀 | 換皮膚 | `/set-skin`、`/skin`、啟動時讀 `PET_SKIN` |
+| 外觀 | 換皮膚 | F1 面板（§3.5）、`/set-skin`、`/skin`、啟動時讀 `PET_SKIN` |
 | 位置 | 移動視窗 | 拖曳（任何狀態都能移動；macOS 除外） |
 | 泡泡・特殊 | 打招呼 / 告別 / 縮放 / 外觀 / 更新提醒 | §3.4；會擋住其他台詞 |
 | 泡泡・暫時 | 進入待機的一句、自言自語、單擊、雙擊 | 3～4 秒後回持久台詞或淡出 |
@@ -111,6 +111,7 @@ hook 事件的對應在 `src/hook.rs`，多對話合併在 `src/state.rs`，前�
 
 - 多對話時取最高優先：`等待確認 > 嚴重錯誤 > 工具出錯 > 工作中 > 待機`。
 - 工作中 / 等待確認 / 工具出錯超過 30 分鐘沒有任何事件，自動回到待機（`STALE_TIMEOUT`）；嚴重錯誤保留到下一次操作。
+- 對話結束：收到 `SessionEnd`，或（Windows）執行 hook 的 agent 程序已經結束（每 5 秒檢查，見下方 Copilot 一節）。所有對話都結束就告別、離開。
 
 #### GitHub Copilot（🧪 測試中，尚未正式支援）
 
@@ -124,11 +125,17 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 | `notification`（`permission_prompt` / `elicitation_dialog`） | 原生 | 等待確認 | 預期才是真正的確認框訊號（尚未實測） |
 | `Stop` | 相容 | 待機（完成） | Copilot CLI `-p` 模式結束時偶爾收不到 |
 | `ErrorOccurred` | 相容 | `recoverable` 為 false → 嚴重錯誤；其他 → 工具出錯 | Copilot 沒有 `StopFailure` |
-| `SessionEnd` | 相容 | 結束（告別） | |
+| `SessionEnd` | 相容 | 結束（告別） | VS Code：開新聊天時會對被取代的舊聊天送出 |
+
+- VS Code Copilot（從本機資料夾載入插件實測）：`SessionStart` → `UserPromptSubmit` → `PreToolUse` / `permissionRequest` / `PostToolUse` → `Stop`，完成時會回到待機，動作切換與 Claude Code 相同。
+- **agent 結束就當作對話結束**（Windows）：hook 會附上執行它的 agent 程序 PID（往上跳過 powershell、cmd、bash 等殼層，例如 `claude.exe`、VS Code 的 `copilot-runtime.exe`、Copilot CLI 的 `node.exe`）。桌寵記下 PID 與啟動時間，**每 5 秒檢查一次**，程序不在了就把它的對話當作收到 `SessionEnd`（全部結束就照常告別、離開）。關掉 VS Code 或終端機時常常不會送 `SessionEnd`，靠這個收尾。見 `src/agent.rs`、`StateMachine::end_dead_agents`。
+- **結束事件不啟動桌寵**：桌寵沒在跑時收到 `SessionEnd`，hook 直接忽略（沒在跑就代表沒有要結束的對話）。否則會為了轉交結束事件把桌寵叫起來，它發現沒有對話又馬上離開，多閃一次。見 `src/main.rs` `read_stdin_and_send`。
 
 - hook 指令：Claude Code 用 `command`（sh 啟動器），Copilot 在 Windows 用 `powershell` 欄位直接執行 `pawpeek.exe`；Copilot 不支援 `args`。
 - Copilot 的 `PreToolUse` hook **失敗會擋下工具呼叫**，所以 hook 模式在任何情況下都要結束碼 0、stdout 不輸出（含不支援的作業系統）。
 - 測試方式見 [PLUGIN.md](../PLUGIN.md)「用真的 agent 測試 hook」。
+- Copilot 把 hook 放進不允許脫離的 Job Object，hook 結束就連同子程序一起關掉（實測：寵物每個 hook 出現一次、1～8 秒後消失）。
+  所以常駐程式的啟動順序是：脫離 Job（`CREATE_BREAKAWAY_FROM_JOB`，Claude Code 用這個）→ 不允許時請 WMI 代為啟動（Copilot，寵物約晚 3 秒出現）→ 都不行才用一般方式。見 `src/daemon.rs` `start_detached_daemon`。
 
 ### 1.2 前端狀態
 
@@ -198,7 +205,8 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 |------|------|-------|------|
 | 單擊 | 任何狀態；放開後 250ms 內沒有第二下才算單擊（避免雙擊時先冒出單擊台詞）；特殊泡泡顯示中不說 | `chatter.<目前狀態>` 隨機一句（拖曳中視為待機），暫時 4 秒 | 待機時隨機 `waving` / `jumping` / `waiting` / `review` 2 秒，期間不接受下一次單擊 |
 | 雙擊 | 任何狀態；會取消等待中的單擊；特殊泡泡顯示中不說 | `dblclick.<狀態>`（對話數與狀態），暫時 3 秒 | 無 |
-| `[` / `]` 縮放 | 點過寵物取得焦點後 | `zoom.changed`，特殊 1.5 秒 | 無 |
+| `[` / `]` 縮放 | 點過寵物取得焦點後；在 F1 面板輸入框打字時不算 | `zoom.changed`，特殊 1.5 秒 | 無 |
+| F1 | 點過寵物取得焦點後 | 不說；開關換外觀面板，見 §3.5 | 無 |
 | 拖曳 | 見 §4 | | |
 
 ### 3.4 特殊泡泡
@@ -210,10 +218,23 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 | 縮放 `zoom.changed` | `[` / `]` | 1.5 秒 |
 | 外觀：讀圖失敗 `skin.image_error` | 啟動時 `PET_SKIN` 圖片讀不到 | 4 秒 |
 | 外觀：下載中 / 完成 / 找不到 / 網路錯誤 | 從 Petdex 下載外觀 | 5 / 3 / 4 / 4 秒 |
-| 外觀：切換完成 `skin.changed` 等 | `/set-skin`、`/skin` | 3～4 秒 |
+| 外觀：切換完成 `skin.changed` 等 | `/set-skin`、`/skin`、F1 面板 | 3～4 秒 |
+| 外觀：F1 面板失敗 `panel.not_found` / `network_error` / `bad_image` / `save_error` | F1 面板輸入的外觀換不成（保留目前外觀） | 4 秒 |
 | 更新提醒 `update.available` | 見 §5 | 直到狀態改變 |
 
 - 新的特殊泡泡會直接取代正在顯示的特殊泡泡。
+
+### 3.5 F1 換外觀面板
+
+- **開關**：點過寵物取得焦點後按 F1 打開；再按 F1、按 ✕ 或在輸入框按 Esc 關閉。
+- **內容**只有三項（沒有縮放）：
+  - 輸入框：輸入 Petdex 寵物名稱（也接受圖片路徑或 `default`），按 Enter 送出，**送出後面板立刻關閉**；空白不送出。
+  - 「匯入自訂外觀…」按鈕：跳出選檔視窗（與 `/skin` 相同流程），**按下後面板關閉**。
+  - 「👋 離開」按鈕：讓寵物離開，與 `/pawpeek:quit` 相同（不說告別、立刻結束；之後只有新對話開始 `SessionStart` 才會再出現）。Copilot 沒有指令可用，靠這個關閉。
+- **位置**：放在泡泡的位置（寵物上方；靠近螢幕頂端時在下方），外框與泡泡相同。面板開著時泡泡先藏起來，關閉後照常顯示。
+- 面板算在可點範圍內（§4.1），但在面板上按不會拖曳、也不觸發單擊 / 雙擊。
+- **輸入名稱的結果**：本機已有就直接換；沒有就從 Petdex 下載，`skin.downloading` 一直顯示到下載結束，成功顯示 `skin.installed`。找不到、網路錯誤、圖片不符時**保留目前外觀、不改 `.env`**，顯示 `panel.*` 提示 4 秒。
+- 實作：前端 `toggleSkinPanel`（`src/webview.rs`），送 `setSkin` / `importSkin` 給主程式；換外觀在 `src/daemon.rs` `set_skin_from_panel`。
 
 ## 4. 拖曳
 
@@ -246,7 +267,18 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 
 ## 6. 台詞來源（`messages.json`）
 
-使用者的檔案在「文件」下的 `.pawpeek/messages.json`，缺的欄位用內建預設（`assets/messages.json`）補上。陣列會隨機挑一句。
+使用者的檔案在「文件」下的 `.pawpeek/messages.json`。陣列會隨機挑一句。
+
+桌寵**每次啟動**時依兩種情況處理這個檔案（`src/config.rs` `ensure_files`）：
+
+| 情況 | 處理 |
+|------|------|
+| 檔案不存在 | 用內建預設（`assets/messages.json`）產生一份 |
+| 檔案已存在 | **只補上缺的 key**（遞迴比對每一層），寫回檔案；使用者改過的值、型別（字串 / 陣列）一律保留，**不會整個還原**；原本的欄位順序保留，新 key 接在同一層最後面 |
+
+- 沒有缺 key 就不寫檔。檔案格式錯誤（不是合法 JSON）時不動它，讀取時改用內建預設。
+- 讀取時仍會在記憶體裡用內建預設補齊（檔案寫不進去也不會缺字）。
+- **新增台詞時**：只要把新 key 加進 `assets/messages.json`，使用者升級後下次啟動就會自動補進他的檔案，不用另外處理。改掉或刪掉既有 key 不會同步（使用者檔案裡的舊 key 會留著、不再讀取）。
 
 | 欄位 | 用途 |
 |------|------|
@@ -258,6 +290,7 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 | `zoom.changed` | 縮放提示（`{scale}`） |
 | `update.available` | 更新提醒（`{latest}`、`{current}`） |
 | `skin.*` / `import.*` | 外觀相關提示與對話框 |
+| `panel.*` | F1 換外觀面板的文字（輸入框提示、按鈕）與失敗提示 |
 | `state_label.*` | 雙擊時 `{state}` 顯示的狀態名稱 |
 
 舊版的 `idle`、`click_head`、`click_body`、`drag` 已併入 `chatter`，不再讀取。
@@ -268,6 +301,8 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 |------|------|
 | hook 事件 → 狀態 | `src/hook.rs` `map_hook_event` |
 | 多對話合併、優先順序、逾時 | `src/state.rs` |
+| agent 程序偵測（結束就當作對話結束） | `src/agent.rs` |
+| `messages.json` 產生 / 補缺的 key | `src/config.rs` `ensure_files` |
 | 狀態通知、特殊泡泡、打招呼 / 告別、更新檢查 | `src/daemon.rs`（`onHookState`、`speech.special`、`queueUpdate`） |
 | 泡泡三層、淡入淡出、打字、掃光 | `src/bubble.rs`（`speech`、CSS） |
 | 前端狀態、拖曳、單擊、雙擊、自言自語、更新提醒排隊 | `src/webview.rs` `CONTROLLER_JS` |
@@ -281,11 +316,20 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 - **正式版**（`cargo build --release`，打包與 CI 用的）一律不顯示。
 - 這行字不受狀態、泡泡、單擊影響，也不觸發寵物的互動（`pointer-events: none`）。實作在 `src/webview.rs` `build_page` 的 `demo_label`（`cfg!(debug_assertions)`）。
 - 要驗證新改動請用 `cargo build` 的測試版跑；`--release` 的結果不會有這行字。
+- 測試版預設用 **47391** 埠（正式版 47390），可以和已安裝的正式版同時開著、各收各的事件；環境變數 `PAWPEEK_PORT` 或常駐程式參數 `--port` 可再指定。
 
 ## 8. 變更紀錄
 
 | 日期 | 變更 |
 |------|------|
+| 2026-11-16 | agent 程序結束（沒送 `SessionEnd`）時，5 秒內把它的對話當作結束（Windows），§1.1 補充 |
+| 2026-11-16 | §6 `messages.json`：檔案不存在就產生；已存在就只補缺的 key、保留使用者的值與順序（原本只在記憶體補，檔案不會更新） |
+| 2026-11-16 | §3.5 F1 面板新增「👋 離開」按鈕（與 `/pawpeek:quit` 相同），面板改為三項；新增 `panel.quit` / `panel.quit_hint` |
+| 2026-11-16 | 桌寵沒在跑時收到 `SessionEnd` 不再啟動桌寵（避免 VS Code 開新聊天時多閃一次）；VS Code Copilot 實測有 `Stop`，§1.1 補充；更新提醒 `update.available` 同時寫出 Claude Code 與 VS Code 的更新方式 |
+| 2026-11-16 | 修正 Copilot 下寵物反覆出現又消失：常駐程式脫離 hook 的 Job Object（不允許時改由 WMI 代為啟動）；§1.1 Copilot 補充 |
+| 2026-11-16 | 測試版（debug build）預設用 47391 埠，可和已安裝的正式版（47390）同時開、各收各的事件 |
+| 2026-11-16 | 新增 §3.5 F1 換外觀面板：輸入 Petdex 名稱（Enter 送出後關閉）、匯入自訂外觀（按下後關閉）、F1 / ✕ / Esc 關閉；面板輸入時 `[` / `]` 不縮放；新增 `panel.*` 台詞 |
+| 2026-11-16 | 寵物出現時不搶焦點（Windows）：視窗先隱藏、以不啟用方式顯示，WebView2 建立時也不取得焦點；點過寵物才取得焦點 |
 | 2026-11-16 | 🧪 GitHub Copilot 支援（測試中）：§1.1 新增 Copilot 事件對應；hook 指令改成 `command` + `powershell`（不用 `args`）；新增 `ErrorOccurred`；Copilot 的 `permissionRequest` 視為工作中 |
 | 2026-11-16 | 新增 §9 測試版標示：測試版（debug build）在寵物方框底部顯示不消失的 `DEMO`（泡泡外框），正式版不顯示 |
 | 2026-11-16 | 可點範圍只限寵物矩形與顯示中的泡泡，預留的空白處滑鼠穿透到底下視窗（Windows）；拖曳、單擊、雙擊與可點範圍一致（泡泡上也能拖曳、點擊）；新增 §4.1 |

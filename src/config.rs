@@ -1,6 +1,6 @@
 //! 使用者設定：一律放在「文件」資料夾下的 `.pawpeek/`
 //!
-//! - `messages.json`：所有提示文字（首次啟動自動產生範本，可手改，下次啟動讀入）
+//! - `messages.json`：所有提示文字（沒有就產生範本；已有就只補缺的 key，不覆蓋使用者改過的值；可手改，下次啟動讀入）
 //! - `.env`：`PET_SKIN` 指定寵物外觀（Petdex 名稱或本機圖片）
 
 use std::collections::HashMap;
@@ -55,14 +55,50 @@ fn documents_dir() -> Option<PathBuf> {
 #[cfg(not(target_os = "windows"))]
 fn documents_dir() -> Option<PathBuf> { None }
 
-/// 首次啟動：建立資料夾與範本檔（已存在就不覆蓋）
+/// 啟動時準備設定檔：
+/// - `messages.json`：沒有就產生範本；已經有就**只補上缺的 key**（新版新增的台詞），使用者改過的值一律保留，不整個還原
+/// - `.env`：沒有就產生範本（已存在不動）
 pub fn ensure_files() {
     let dir = app_dir();
     let _ = std::fs::create_dir_all(&dir);
     let messages = dir.join("messages.json");
-    if !messages.exists() { let _ = std::fs::write(&messages, DEFAULT_MESSAGES); }
+    if !messages.exists() {
+        let _ = std::fs::write(&messages, DEFAULT_MESSAGES);
+    } else {
+        sync_messages_file(&messages);
+    }
     let env = dir.join(".env");
     if !env.exists() { let _ = std::fs::write(&env, DEFAULT_ENV); }
+}
+
+/// 使用者的 messages.json 缺少內建預設裡的 key 就補上並寫回；有補才寫。
+/// 檔案格式錯誤時不動它（避免把使用者的內容蓋掉），讀取時會改用預設值。
+fn sync_messages_file(path: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let Ok(mut user) = serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')) else {
+        eprintln!("[pawpeek] messages.json 格式錯誤，不補新欄位");
+        return;
+    };
+    let Ok(defaults) = serde_json::from_str::<Value>(DEFAULT_MESSAGES) else { return };
+    if fill_missing(&mut user, &defaults) {
+        if let Ok(s) = serde_json::to_string_pretty(&user) {
+            let _ = std::fs::write(path, s + "\n");
+        }
+    }
+}
+
+/// 把 `defaults` 有、`user` 沒有的 key 補進 `user`（遞迴處理物件）；已有的 key 不論值是什麼都不改。
+/// 回傳是否有補任何東西。新 key 接在同一層的最後面（需要 serde_json 的 preserve_order）。
+fn fill_missing(user: &mut Value, defaults: &Value) -> bool {
+    let (Value::Object(u), Value::Object(d)) = (user, defaults) else { return false };
+    let mut changed = false;
+    for (k, dv) in d {
+        match u.get_mut(k) {
+            Some(uv) => changed |= fill_missing(uv, dv),
+            None => { u.insert(k.clone(), dv.clone()); changed = true; }
+        }
+    }
+    changed
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +283,35 @@ pub fn parse_skin(v: &str) -> SkinSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fill_missing_adds_only_new_keys() {
+        let mut user: Value = serde_json::from_str(
+            r#"{"greeting":["自己改的"],"skin":{"changed":"我的版本"}}"#).unwrap();
+        let defaults: Value = serde_json::from_str(
+            r#"{"greeting":["預設"],"skin":{"changed":"預設","installed":"新的"},"panel":{"quit":"👋 離開"}}"#).unwrap();
+        assert!(fill_missing(&mut user, &defaults));
+        // 使用者改過的值不動
+        assert_eq!(user["greeting"][0], "自己改的");
+        assert_eq!(user["skin"]["changed"], "我的版本");
+        // 缺的 key 補上（含整組新的群組）
+        assert_eq!(user["skin"]["installed"], "新的");
+        assert_eq!(user["panel"]["quit"], "👋 離開");
+        // 原本的順序保留，新 key 接在後面
+        let keys: Vec<_> = user.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(keys, ["greeting", "skin", "panel"]);
+        // 再跑一次沒有東西要補
+        assert!(!fill_missing(&mut user, &defaults));
+    }
+
+    #[test]
+    fn fill_missing_keeps_user_type() {
+        // 使用者把陣列改成字串（或反過來）也照樣保留
+        let mut user: Value = serde_json::from_str(r#"{"done":"只有一句"}"#).unwrap();
+        let defaults: Value = serde_json::from_str(r#"{"done":["a","b"]}"#).unwrap();
+        assert!(!fill_missing(&mut user, &defaults));
+        assert_eq!(user["done"], "只有一句");
+    }
 
     #[test]
     fn set_env_replaces_existing_line() {

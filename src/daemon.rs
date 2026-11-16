@@ -25,6 +25,8 @@ pub enum UiCommand {
     CheckOnScreen,
     /// 外部指令：依 .env 重新載入外觀（`pawpeek --set-skin` 改完 .env 後送來）
     ReloadSkin,
+    /// F1 面板輸入的外觀（Petdex 名稱、圖片路徑或 default）
+    SetSkin(String),
     /// 在寵物頁執行的 JS（例如泡泡改到寵物下方）
     PetJs(String),
     SessionCount(u32),
@@ -112,7 +114,10 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
     let mut window_builder = WindowBuilder::new()
         .with_inner_size(tao::dpi::LogicalSize::new(140.0, 180.0))
         .with_decorations(false).with_transparent(true).with_always_on_top(true)
-        .with_resizable(false);
+        .with_resizable(false)
+        // 先不顯示、顯示時不啟用：預設會在 build 時就以 SW_SHOW 顯示並搶走焦點
+        // （那時下面的 WS_EX_NOACTIVATE 還沒設上）；之後 set_visible 會改用 SW_SHOWNOACTIVATE
+        .with_visible(false).with_focused(false);
     #[cfg(target_os = "windows")]
     { use tao::platform::windows::WindowBuilderExtWindows;
       window_builder = window_builder.with_skip_taskbar(true).with_no_redirection_bitmap(true); }
@@ -221,6 +226,8 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
 
     let webview = WebViewBuilder::new()
         .with_transparent(true)
+        // 預設會在建立後把鍵盤焦點移進 WebView2，連帶把視窗帶到前景
+        .with_focused(false)
         .with_custom_protocol("pet".into(), move |_id, request| {
             let path = request.uri().path();
             if path == "/sprite" {
@@ -281,6 +288,26 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                             }
                         }
                     }
+                }
+                // 測試版：前端的除錯訊息（F1 面板開關等）
+                if v.get("type").and_then(|t| t.as_str()) == Some("debug") {
+                    debug_note(&format!("前端：{}", v.get("msg").and_then(|m| m.as_str()).unwrap_or("")));
+                }
+                // F1 面板：輸入外觀名稱 / 匯入自訂外觀
+                if v.get("type").and_then(|t| t.as_str()) == Some("importSkin") { debug_note("收到 importSkin"); }
+                if v.get("type").and_then(|t| t.as_str()) == Some("setSkin") {
+                    if let Some(s) = v.get("value").and_then(|s| s.as_str()) {
+                        let _ = proxy_ipc.send_event(UiCommand::SetSkin(s.to_string()));
+                    }
+                }
+                if v.get("type").and_then(|t| t.as_str()) == Some("importSkin") {
+                    let _ = proxy_ipc.send_event(UiCommand::ImportSkin);
+                }
+                // F1 面板的「讓寵物離開」：和 /pawpeek:quit 相同，下次新對話開始才會再出現
+                if v.get("type").and_then(|t| t.as_str()) == Some("quit") {
+                    debug_note("收到 quit");
+                    mark_manual_quit();
+                    let _ = proxy_ipc.send_event(UiCommand::Quit);
                 }
                 if v.get("type").and_then(|t| t.as_str()) == Some("saveScale") {
                     if let Some(s) = v.get("scale").and_then(|s| s.as_f64()) {
@@ -428,6 +455,11 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                 if tick % 60 == 0 {
                     s.expire_stale(std::time::Instant::now(), crate::state::STALE_TIMEOUT);
                 }
+                // 每 5 秒檢查 agent 程序：關掉 VS Code / 終端機（沒送 SessionEnd）時把它的對話結束
+                if tick % 5 == 0 {
+                    let n = s.end_dead_agents(crate::agent::is_alive);
+                    if n > 0 { debug_note(&format!("agent 已結束，結束 {n} 個對話")); }
+                }
                 (s.current_state(), s.session_count())
             };
             let _ = proxy_poll.send_event(UiCommand::SetState(cur));
@@ -547,6 +579,11 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                         if let Some(name) = pending { download_skin(&proxy, &msgs, &name); }
                     });
                 }
+                UiCommand::SetSkin(value) => {
+                    let proxy = proxy_import.clone();
+                    let msgs = Arc::clone(&msgs_ui);
+                    std::thread::spawn(move || set_skin_from_panel(&proxy, &msgs, &value));
+                }
                 UiCommand::PetJs(js) => { if let Some(ref wv) = webview { let _ = wv.evaluate_script(&js); } }
                 UiCommand::CheckOnScreen => {
                     let lost = window.lock().map(|w| {
@@ -575,6 +612,36 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
     Ok(())
 }
 
+/// 請 WMI 代為啟動常駐程式：WMI 服務建立的程序不在呼叫端的 Job Object 裡，不會被 agent 連帶關掉。
+/// WMI 建立的程序不繼承環境變數，所以埠號用 `--port` 傳。要等 PowerShell 跑完（它本身在 Job 裡）。
+#[cfg(windows)]
+fn spawn_via_wmi(port: u16) -> bool {
+    use std::os::windows::process::CommandExt;
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let exe_s = exe.display().to_string().replace('\'', "''");
+    let dir_s = exe.parent().map(|d| d.display().to_string()).unwrap_or_default().replace('\'', "''");
+    // CreateFlags 8 = DETACHED_PROCESS（不開主控台視窗）
+    let script = format!(
+        "$s = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{{CreateFlags=[uint32]8}}; \
+         $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{CommandLine='\"{exe_s}\" --daemon --port {port}'; CurrentDirectory='{dir_s}'; ProcessStartupInformation=$s}}; \
+         exit [int]$r.ReturnValue"
+    );
+    let child = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .spawn();
+    let Ok(mut child) = child else { return false };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return st.success(),
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(50)),
+            _ => { let _ = child.kill(); return false; }
+        }
+    }
+}
+
 pub fn start_detached_daemon(_port: u16) -> bool {
     if is_manual_quit() { return false; }
     // Windows：子程序會繼承所有可繼承的控制代碼。hook 的 stdin/stdout/stderr 是 agent 給的管道，
@@ -591,12 +658,45 @@ pub fn start_detached_daemon(_port: u16) -> bool {
             if h != 0 && h != -1 { SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0); }
         }
     }
-    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap_or_default());
-    cmd.arg("--daemon").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    #[cfg(windows)] { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0000_0200 | 0x0000_0008); }
-    cmd.spawn().is_ok()
+    let spawn = |_flags: u32| {
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap_or_default());
+        cmd.args(["--daemon", "--port", &_port.to_string()]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        #[cfg(windows)] { use std::os::windows::process::CommandExt; cmd.creation_flags(_flags); }
+        cmd.spawn().is_ok()
+    };
+    // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
+    const DETACHED: u32 = 0x0000_0200 | 0x0000_0008;
+    // CREATE_BREAKAWAY_FROM_JOB：Copilot 把 hook 放進 Job Object，hook 結束就連同子程序一起關掉，
+    // 寵物會每個 hook 出現一次、幾秒後消失（實測）。脫離 Job 才能常駐；Job 不允許脫離時建立會失敗，改用一般方式
+    const BREAKAWAY: u32 = 0x0100_0000;
+    // Job 不允許脫離（Copilot）：改請 WMI 代為啟動；都不行才用一般方式（可能會被連帶關掉）
+    #[cfg(windows)]
+    let wmi = || spawn_via_wmi(_port);
+    #[cfg(not(windows))]
+    let wmi = || false;
+    let mode = if spawn(DETACHED | BREAKAWAY) { "breakaway" }
+        else if wmi() { "wmi" }
+        else if spawn(DETACHED) { "detached" }
+        else { "failed" };
+    // 除錯：PAWPEEK_HOOK_LOG 有設時記下用了哪種方式啟動
+    if let Ok(path) = std::env::var("PAWPEEK_HOOK_LOG") {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            use std::io::Write;
+            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            let _ = writeln!(f, "{}", serde_json::json!({ "t": t, "spawn": mode, "pid": std::process::id() }));
+        }
+    }
+    mode != "failed"
 }
-pub fn fixed_port() -> u16 { FIXED_PORT }
+/// 測試版（debug build，顯示 DEMO）預設用的埠：和已安裝的正式版分開，兩隻可以同時開、各收各的事件
+const DEBUG_PORT: u16 = 47391;
+
+/// 通訊埠：正式版 47390、測試版 47391；環境變數 `PAWPEEK_PORT` 可再改掉
+/// （hook 啟動的常駐程式會繼承環境變數，兩邊一致）
+pub fn fixed_port() -> u16 {
+    let default = if cfg!(debug_assertions) { DEBUG_PORT } else { FIXED_PORT };
+    std::env::var("PAWPEEK_PORT").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(default)
+}
 
 pub fn is_manual_quit() -> bool {
     data_dir().join(".manual-quit").exists()
@@ -775,6 +875,65 @@ fn load_skin_from_env(msgs: &Messages) -> (Vec<u8>, Option<String>, Option<Strin
             Some(b) => (b, None, None),
             None => (default(), None, Some(name)),
         },
+    }
+}
+
+/// 測試版（debug build）的除錯紀錄：寫到 `<文件>/.pawpeek/pet-debug.log`（正式版不記）
+fn debug_note(msg: &str) {
+    if !cfg!(debug_assertions) { return; }
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(crate::config::app_dir().join("pet-debug.log")) {
+        use std::io::Write;
+        let _ = writeln!(f, "{t} {msg}");
+    }
+}
+
+/// F1 面板輸入的外觀（Petdex 名稱、圖片路徑或 default）：換成功才寫入 .env，
+/// 找不到 / 網路錯誤 / 圖片不符時保留目前外觀（在背景執行緒呼叫）
+fn set_skin_from_panel(proxy: &tao::event_loop::EventLoopProxy<UiCommand>, msgs: &Messages, value: &str) {
+    let value = value.trim();
+    debug_note(&format!("setSkin 開始：[{value}]"));
+    if value.is_empty() { return; }
+    let bubble = |text: String, ms: u64| {
+        debug_note(&format!("  泡泡：{text}"));
+        if !text.is_empty() { let _ = proxy.send_event(UiCommand::ShowBubble { text, duration_ms: ms }); }
+    };
+    let apply = |slug: &str, bytes: Vec<u8>, text: String| {
+        match crate::config::save_pet_skin(slug) {
+            Ok(()) => { debug_note(&format!("  已換成 [{slug}]")); let _ = proxy.send_event(UiCommand::SetSprite(bytes)); bubble(text, 3000); }
+            Err(e) => bubble(fill(&msgs.text("panel.save_error"), &[("err", e.to_string().as_str())]), 4000),
+        }
+    };
+    if crate::skin::is_default_keyword(value) {
+        return apply("", crate::skin::DEFAULT_SPRITESHEET.to_vec(), msgs.text("skin.changed"));
+    }
+    match crate::config::parse_skin(value) {
+        SkinSource::Default => {}
+        SkinSource::File(path) => {
+            let name = path.display().to_string();
+            match std::fs::read(&path).ok().filter(|b| crate::skin::validate_sheet(b).is_ok()) {
+                Some(b) => {
+                    let slug = crate::skin::CUSTOM_SLUG;
+                    match crate::skin::save_local(slug, &b) {
+                        Ok(_) => apply(slug, b, msgs.text("skin.changed")),
+                        Err(e) => bubble(fill(&msgs.text("panel.save_error"), &[("err", e.to_string().as_str())]), 4000),
+                    }
+                }
+                None => bubble(fill(&msgs.text("panel.bad_image"), &[("name", name.as_str())]), 4000),
+            }
+        }
+        SkinSource::Name(name) => {
+            if let Some(b) = crate::skin::load_local(&name).filter(|b| crate::skin::validate_sheet(b).is_ok()) {
+                return apply(&name, b, msgs.text("skin.changed"));
+            }
+            bubble(fill(&msgs.text("skin.downloading"), &[("name", name.as_str())]), 30000);
+            match crate::skin::download(&name) {
+                Ok((slug, b)) if crate::skin::validate_sheet(&b).is_ok() => apply(&slug, b, msgs.text("skin.installed")),
+                Ok((slug, _)) => bubble(fill(&msgs.text("panel.bad_image"), &[("name", slug.as_str())]), 4000),
+                Err(crate::skin::DownloadError::NotFound) => bubble(fill(&msgs.text("panel.not_found"), &[("name", name.as_str())]), 4000),
+                Err(crate::skin::DownloadError::Network) => bubble(msgs.text("panel.network_error"), 4000),
+            }
+        }
     }
 }
 

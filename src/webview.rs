@@ -26,10 +26,34 @@ pub fn build_page(messages_js: &str, saved_scale: f64) -> String {
   .pet.dragging {{ cursor: grabbing; }}
   ::-webkit-scrollbar {{ display: none; }}
 {bubble_css}
+  /* F1 換外觀面板：放在泡泡的位置（寵物上方，靠近螢幕頂端時在下方），開著時泡泡先藏起來 */
+  #skin-panel {{
+    display: none; flex: 0 0 auto; box-sizing: border-box; width: 240px; margin-bottom: 9px; padding: 8px;
+    border-radius: 12px; background: rgba(22, 24, 38, 0.92); color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32), 0 1px 3px rgba(0, 0, 0, 0.2);
+    font: 500 12px/1.4 "Segoe UI", "Microsoft JhengHei UI", system-ui, sans-serif;
+  }}
+  .stage.below #skin-panel {{ margin-bottom: 0; margin-top: 9px; }}
+  body.panel-open #skin-panel {{ display: block; }}
+  body.panel-open #pet-bubble {{ display: none !important; }}
+  #skin-panel .row {{ display: flex; gap: 6px; align-items: center; }}
+  #skin-panel .row + .row {{ margin-top: 6px; }}
+  #skin-panel input, #skin-panel button {{
+    box-sizing: border-box; height: 26px; border-radius: 7px; font: inherit; color: #fff; outline: none;
+    border: 1px solid rgba(255, 255, 255, 0.16); background: rgba(255, 255, 255, 0.08);
+  }}
+  #skin-panel input {{ flex: 1; min-width: 0; padding: 0 8px; cursor: text !important; }}
+  #skin-panel input:focus {{ border-color: rgba(150, 175, 255, 0.85); }}
+  #skin-panel input::placeholder {{ color: rgba(255, 255, 255, 0.45); }}
+  #skin-panel button {{ padding: 0 10px; cursor: pointer !important; }}
+  #skin-panel button:hover {{ background: rgba(255, 255, 255, 0.18); }}
+  #skin-import {{ flex: 1; }}
+  #skin-close {{ width: 26px; padding: 0 !important; }}
 </style>
 </head>
 <body>
-<div class="stage"><div class="pet" id="pet" data-state="idle"><canvas id="pet-canvas" width="192" height="208" style="display:block;width:100%;height:100%;pointer-events:none;image-rendering:pixelated"></canvas></div></div>
+<div class="stage"><div id="skin-panel"><div class="row"><input id="skin-input" type="text" spellcheck="false" autocomplete="off"><button id="skin-close">✕</button></div><div class="row"><button id="skin-import"></button><button id="pet-quit"></button></div></div><div class="pet" id="pet" data-state="idle"><canvas id="pet-canvas" width="192" height="208" style="display:block;width:100%;height:100%;pointer-events:none;image-rendering:pixelated"></canvas></div></div>
 {demo_label}
 <script>
 var COLS = 8, ROWS = 9;
@@ -52,6 +76,9 @@ function keyName(e) {{
   if (e.code === 'BracketRight') return ']';
   return e.key;
 }}
+// 測試版（debug build）把除錯訊息送給主程式記到 pet-debug.log；正式版不送
+var PET_DEBUG = {pet_debug};
+function dbg(msg) {{ if (PET_DEBUG) window.ipc.postMessage(JSON.stringify({{type:'debug', msg: String(msg)}})); }}
 // 提示文字（來自 文件/.pawpeek/messages.json）
 var MSG = {messages_js};
 function M(group, key) {{ var g = MSG[group]; return (g && typeof g[key] === 'string') ? g[key] : ''; }}
@@ -185,10 +212,52 @@ else window.syncWindowSize();
 // 右鍵：擋掉瀏覽器預設選單
 document.addEventListener('contextmenu', function(e) {{ e.preventDefault(); }});
 
+// --- F1 面板：輸入 Petdex 名稱（Enter 送出後關閉）、匯入自訂外觀、讓寵物離開、關閉（✕ / F1 / Esc）---
+var skinPanel = document.getElementById('skin-panel');
+var skinInput = document.getElementById('skin-input');
+skinInput.placeholder = M('panel', 'placeholder');
+document.getElementById('skin-import').textContent = M('panel', 'import');
+document.getElementById('skin-close').title = M('panel', 'close');
+document.getElementById('pet-quit').textContent = M('panel', 'quit');
+document.getElementById('pet-quit').title = M('panel', 'quit_hint');
+function panelOpen() {{ return document.body.classList.contains('panel-open'); }}
+window.toggleSkinPanel = function(open) {{
+  if (open === undefined) open = !panelOpen();
+  document.body.classList.toggle('panel-open', open);
+  if (open) {{ skinInput.value = ''; skinInput.focus(); }} else skinInput.blur();
+  dbg('面板 ' + (open ? '開' : '關') + '，面板大小 ' + skinPanel.offsetWidth + 'x' + skinPanel.offsetHeight + '，焦點在輸入框=' + (document.activeElement === skinInput));
+  window.syncWindowSize();
+  reportHitRects();
+}};
+skinInput.addEventListener('keydown', function(e) {{
+  if (e.isComposing || e.keyCode === 229) return; // 輸入法選字中
+  if (e.key === 'Escape') {{ e.preventDefault(); window.toggleSkinPanel(false); return; }}
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  var v = skinInput.value.trim();
+  dbg('輸入框按 Enter，內容=[' + v + ']');
+  if (!v) return;
+  window.ipc.postMessage(JSON.stringify({{type:'setSkin', value: v}}));
+  window.toggleSkinPanel(false);
+}});
+document.getElementById('skin-import').addEventListener('click', function() {{
+  window.ipc.postMessage(JSON.stringify({{type:'importSkin'}}));
+  window.toggleSkinPanel(false);
+}});
+document.getElementById('skin-close').addEventListener('click', function() {{ window.toggleSkinPanel(false); }});
+// 讓寵物離開：和 /pawpeek:quit 相同（下次開新對話才會再出現）；Copilot 沒有指令，靠這個關
+document.getElementById('pet-quit').addEventListener('click', function() {{
+  window.toggleSkinPanel(false);
+  window.ipc.postMessage(JSON.stringify({{type:'quit'}}));
+}});
+
 // --- 鍵盤（點一下寵物取得焦點後可用）---
-// [ / ]：縮小 / 放大，範圍 0.5～1.5
+// F1：開關換外觀面板；[ / ]：縮小 / 放大，範圍 0.5～1.5（在面板輸入框打字時不縮放）
 document.addEventListener('keydown', function(e) {{
+  dbg('按鍵 ' + e.key + '（目標 ' + (e.target.id || e.target.tagName) + '）');
+  if (e.key === 'F1') {{ e.preventDefault(); window.toggleSkinPanel(); return; }}
   if (e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.target === skinInput) return;
   var k = keyName(e);
   var d = 0;
   if (k === ']') d = 0.1;
@@ -204,7 +273,8 @@ document.addEventListener('keydown', function(e) {{
 
 </script>
 </body></html>"#, messages_js=messages_js, saved_scale=saved_scale,
-        bubble_css=crate::bubble::CSS, bubble_js=crate::bubble::JS, controller_js=CONTROLLER_JS, demo_label=demo_label)
+        bubble_css=crate::bubble::CSS, bubble_js=crate::bubble::JS, controller_js=CONTROLLER_JS, demo_label=demo_label,
+        pet_debug=cfg!(debug_assertions))
 }
 
 /// 狀態與說話的控制（拖曳、單擊、雙擊、自言自語、更新提醒）。規則見 docs/BEHAVIOR.md，改動時一併更新。
@@ -316,6 +386,9 @@ function endDrag() {
 }
 // 可拖曳 / 可點範圍 = 視窗形狀（寵物方框 + 顯示中的泡泡，見 reportHitRects），兩者一律相同
 function inHitArea(e) {
+  // F1 面板裡的輸入框與按鈕不算寵物（不拖曳、不觸發單擊 / 雙擊）
+  var sp = document.getElementById('skin-panel');
+  if (sp && sp.contains(e.target)) return false;
   var rs = window.__hitRects;
   if (!rs) return e.target === pet || pet.contains(e.target);
   for (var i = 0; i < rs.length; i++) {
@@ -361,6 +434,11 @@ function reportHitRects() {
   if (b && b.offsetWidth > 0) {
     var q = b.getBoundingClientRect(), P = 9; // 含尾巴與陰影
     rects.push([q.left - P, q.top - P, q.width + P * 2, q.height + P * 2]);
+  }
+  var sp = document.getElementById('skin-panel');
+  if (sp && sp.offsetWidth > 0) {
+    var s = sp.getBoundingClientRect(), S = 4; // 含陰影
+    rects.push([s.left - S, s.top - S, s.width + S * 2, s.height + S * 2]);
   }
   rects = rects.map(function(a) { return a.map(function(n) { return Math.round(n); }); });
   window.__hitRects = rects;

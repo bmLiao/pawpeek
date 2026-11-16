@@ -6,8 +6,18 @@ use pawpeek::client::{send_event_str, send_raw_json};
 use pawpeek::daemon::{run_daemon, start_detached_daemon, fixed_port, is_manual_quit, clear_manual_quit};
 
 /// 除錯用：環境變數 `PAWPEEK_HOOK_LOG` 指向檔案時，記下每次收到的 hook 資料與對應到的事件（測試各家 agent 用）
+/// 測試版（debug build）沒設環境變數時也記錄，寫到 `<文件>/.pawpeek/hook-debug.jsonl`
+/// （VS Code Copilot 的 hook 繼承 VS Code 的環境變數，沒辦法另外設）
+fn debug_log_path() -> Option<std::path::PathBuf> {
+    match env::var("PAWPEEK_HOOK_LOG") {
+        Ok(p) => Some(p.into()),
+        Err(_) if cfg!(debug_assertions) => Some(pawpeek::config::app_dir().join("hook-debug.jsonl")),
+        Err(_) => None,
+    }
+}
+
 fn debug_log(raw: &[u8], parsed: Option<&serde_json::Value>) {
-    let Ok(path) = env::var("PAWPEEK_HOOK_LOG") else { return };
+    let Some(path) = debug_log_path() else { return };
     let event = parsed
         .and_then(|v| serde_json::from_value::<pawpeek::hook::HookPayload>(v.clone()).ok())
         .map(|p| (pawpeek::hook::map_hook_event(&p), p.session_id));
@@ -40,8 +50,13 @@ fn read_stdin_and_send(port: u16) {
         return;
     }
     // 桌寵一行讀一筆：重新壓成單行 JSON（agent 送來的可能有換行縮排）
+    // 同時附上 agent 程序的 PID：agent 沒送 SessionEnd 就結束時，桌寵靠它知道對話已結束（見 agent.rs）
     if let Some(ref v) = parsed {
-        if let Ok(compact) = serde_json::to_vec(v) { stdin_bytes = compact; }
+        let mut v = v.clone();
+        if let (serde_json::Value::Object(m), Some(pid)) = (&mut v, pawpeek::agent::find_agent_pid()) {
+            m.insert("pawpeek_agent_pid".into(), pid.into());
+        }
+        if let Ok(compact) = serde_json::to_vec(&v) { stdin_bytes = compact; }
     }
 
     // 用户手动退出后，只有新会话开始才允许重新启动
@@ -57,12 +72,20 @@ fn read_stdin_and_send(port: u16) {
         }
     }
 
+    // 結束事件不為了轉交而啟動桌寵：桌寵沒在跑就代表沒有要結束的對話。
+    // （VS Code 開新聊天時會對舊聊天送 SessionEnd，若啟動桌寵，它收到後發現沒有對話就離開，造成多閃一次）
+    let is_end = parsed.as_ref()
+        .and_then(|v| serde_json::from_value::<pawpeek::hook::HookPayload>(v.clone()).ok())
+        .map(|p| pawpeek::hook::map_hook_event(&p) == "session_end")
+        .unwrap_or(false);
+
     // Try sending; if daemon not running, start it and poll up to ~2s
     let mut daemon_started = false;
     for _ in 0..20 {
         match send_raw_json(port, &stdin_bytes) {
             Ok(()) => return,
             Err(ref e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+                if is_end { return; }
                 if !daemon_started {
                     start_detached_daemon(port);
                     daemon_started = true;
@@ -147,7 +170,10 @@ fn allow_foreground() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let port = fixed_port();
+    // `--port N`：啟動常駐程式時指定埠（WMI 代為啟動時不繼承環境變數，見 daemon::spawn_via_wmi）
+    let port = args.iter().position(|a| a == "--port")
+        .and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok())
+        .unwrap_or_else(fixed_port);
 
     if args.len() >= 2 && args[1] == "--daemon" {
         match run_daemon(port) {
