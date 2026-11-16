@@ -1,3 +1,4 @@
 bin/pawpeek text eol=lf
+tests/hook-probe/bin/probe text eol=lf
 bin/pawpeek-macos binary
 bin/*.exe binary
