@@ -1,6 +1,11 @@
 /// Petdex-verbatim HTML/CSS/JS.
 /// `messages_js`：messages.json 合併後的 JSON（見 config::Messages::to_js）
 pub fn build_page(messages_js: &str, saved_scale: f64) -> String {
+    // 測試版（debug build，`cargo build`）顯示不消失的 DEMO；正式版（--release）不顯示。見 docs/BEHAVIOR.md §9
+    let demo_label = if cfg!(debug_assertions) {
+        // 外框與泡泡相同（底色、圓角、陰影），位置由 CONTROLLER_JS 放到寵物方框內的底部
+        r#"<div id="demo-label" style="position:fixed;transform:translateX(-50%);box-sizing:border-box;padding:3px 12px;border-radius:999px;background:rgba(22,24,38,0.92);color:#fff;border:1px solid rgba(255,255,255,0.10);font:700 12px/1.4 'Segoe UI','Microsoft JhengHei UI',system-ui,sans-serif;letter-spacing:1px;box-shadow:0 4px 14px rgba(0,0,0,0.32),0 1px 3px rgba(0,0,0,0.2);pointer-events:none;white-space:nowrap;z-index:5">DEMO</div>"#.to_string()
+    } else { String::new() };
     format!(r#"<!DOCTYPE html>
 <html>
 <head>
@@ -25,6 +30,7 @@ pub fn build_page(messages_js: &str, saved_scale: f64) -> String {
 </head>
 <body>
 <div class="stage"><div class="pet" id="pet" data-state="idle"><canvas id="pet-canvas" width="192" height="208" style="display:block;width:100%;height:100%;pointer-events:none;image-rendering:pixelated"></canvas></div></div>
+{demo_label}
 <script>
 var COLS = 8, ROWS = 9;
 var STATES = {{
@@ -198,7 +204,7 @@ document.addEventListener('keydown', function(e) {{
 
 </script>
 </body></html>"#, messages_js=messages_js, saved_scale=saved_scale,
-        bubble_css=crate::bubble::CSS, bubble_js=crate::bubble::JS, controller_js=CONTROLLER_JS)
+        bubble_css=crate::bubble::CSS, bubble_js=crate::bubble::JS, controller_js=CONTROLLER_JS, demo_label=demo_label)
 }
 
 /// 狀態與說話的控制（拖曳、單擊、雙擊、自言自語、更新提醒）。規則見 docs/BEHAVIOR.md，改動時一併更新。
@@ -308,10 +314,19 @@ function endDrag() {
   // 拖曳動作完整播完這一輪才回待機（拖曳屬於待機底下的動作，回待機不另外說話）
   afterCycle(function() { if (mode === 'dragging' && !dragHeld) enterMode('idle', null); });
 }
+// 可拖曳 / 可點範圍 = 視窗形狀（寵物方框 + 顯示中的泡泡，見 reportHitRects），兩者一律相同
+function inHitArea(e) {
+  var rs = window.__hitRects;
+  if (!rs) return e.target === pet || pet.contains(e.target);
+  for (var i = 0; i < rs.length; i++) {
+    var r = rs[i];
+    if (e.clientX >= r[0] && e.clientX < r[0] + r[2] && e.clientY >= r[1] && e.clientY < r[1] + r[3]) return true;
+  }
+  return false;
+}
 document.body.addEventListener('mousedown', function(e) {
   if (e.button !== 0) return;
-  // 只有按在寵物身上才拖曳（視窗含預留的泡泡空間，空白處不算）
-  if (!(e.target === pet || pet.contains(e.target))) return;
+  if (!inHitArea(e)) return;
   if (navigator.platform.indexOf('Mac') !== -1) return;
   mouseDown = true; wasDrag = false; skipClick = false;
   startX = e.screenX; startY = e.screenY; lastMove = 0;
@@ -336,11 +351,55 @@ window.addEventListener('mouseup', function() {
   if (dragHeld) { skipClick = true; endDrag(); }
 });
 
+// --- 可點範圍：視窗形狀 = 寵物方框 + 顯示中的泡泡（看得到才畫得出來），其餘穿透到底下的視窗 ---
+// 同一份矩形也是可拖曳 / 可點範圍（inHitArea）
+window.__lastHit = '';
+function reportHitRects() {
+  var r = pet.getBoundingClientRect();
+  var rects = [[r.left, r.top, r.width, r.height]];
+  var b = document.getElementById('pet-bubble');
+  if (b && b.offsetWidth > 0) {
+    var q = b.getBoundingClientRect(), P = 9; // 含尾巴與陰影
+    rects.push([q.left - P, q.top - P, q.width + P * 2, q.height + P * 2]);
+  }
+  rects = rects.map(function(a) { return a.map(function(n) { return Math.round(n); }); });
+  window.__hitRects = rects;
+  var s = JSON.stringify(rects);
+  if (s === window.__lastHit) return;
+  window.__lastHit = s;
+  window.ipc.postMessage(JSON.stringify({type:'hitRects', rects: rects}));
+}
+window.addEventListener('resize', reportHitRects);
+if (window.ResizeObserver) {
+  var ro = new ResizeObserver(reportHitRects);
+  ro.observe(pet);
+  var bb = document.getElementById('pet-bubble');
+  if (bb) ro.observe(bb);
+}
+setInterval(reportHitRects, 100);
+reportHitRects();
+
+// --- 測試版標示：DEMO 放在寵物方框內的底部（不擴大可點範圍；正式版沒有這個元素） ---
+(function() {
+  var d = document.getElementById('demo-label');
+  if (!d) return;
+  function place() {
+    var r = pet.getBoundingClientRect();
+    d.style.left = (r.left + r.width / 2) + 'px';
+    d.style.top = (r.bottom - d.offsetHeight - 2) + 'px';
+  }
+  window.addEventListener('resize', place);
+  if (window.ResizeObserver) new ResizeObserver(place).observe(pet);
+  setInterval(place, 100);
+  place();
+})();
+
 // --- 單擊：依目前狀態說一句自言自語（待機時加一個小動作） ---
 // 等 CLICK_WAIT_MS 確定不是雙擊才算單擊（雙擊時瀏覽器會先送兩次 click）
 var CLICK_WAIT_MS = 250;
 var clickBusy = false, clickTimer = null;
-pet.addEventListener('click', function() {
+document.addEventListener('click', function(e) {
+  if (!inHitArea(e)) return;
   if (skipClick || wasDrag) { skipClick = false; return; }
   if (clickTimer) return; // 第二下：交給 dblclick
   clickTimer = setTimeout(function() { clickTimer = null; singleClick(); }, CLICK_WAIT_MS);
@@ -357,7 +416,8 @@ function singleClick() {
 }
 
 // --- 雙擊：回報對話數與狀態（特殊狀態期間不說） ---
-pet.addEventListener('dblclick', function() {
+document.addEventListener('dblclick', function(e) {
+  if (!inHitArea(e)) return;
   clearTimeout(clickTimer); clickTimer = null; // 取消等待中的單擊
   if (wasDrag) return;
   var state = window.__realState || 'idle';

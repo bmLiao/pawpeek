@@ -305,9 +305,22 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                             let _ = proxy_ipc.send_event(UiCommand::PetJs(format!("setBubbleSide({})", f.below)));
                         }
                         let (ox, oy) = frame_offset(&win);
+                        // 視窗大小 / 位置改變後舊的形狀會錯位：先還原整個視窗，再請前端重新回報
+                        #[cfg(target_os = "windows")]
+                        set_hit_region(&win, &[]);
                         let _ = win.set_inner_size(tao::dpi::PhysicalSize::new(f.rect.w as u32, f.rect.h as u32));
                         win.set_outer_position(tao::dpi::PhysicalPosition::new(f.rect.x - ox, f.rect.y - oy));
+                        let _ = proxy_ipc.send_event(UiCommand::PetJs("window.__lastHit='';".into()));
                     }
+                }
+                #[cfg(target_os = "windows")]
+                if v.get("type").and_then(|t| t.as_str()) == Some("hitRects") {
+                    let rects: Vec<[f64; 4]> = v.get("rects").and_then(|r| r.as_array()).map(|a| a.iter().filter_map(|r| {
+                        let r = r.as_array()?;
+                        let n = |i: usize| r.get(i).and_then(|x| x.as_f64());
+                        Some([n(0)?, n(1)?, n(2)?, n(3)?])
+                    }).collect()).unwrap_or_default();
+                    if let Ok(w) = drag_win.lock() { set_hit_region(&w, &rects); }
                 }
                 if v.get("type").and_then(|t| t.as_str()) == Some("move") {
                     let dx = v.get("dx").and_then(|d| d.as_i64()).unwrap_or(0) as i32;
@@ -588,6 +601,39 @@ fn mark_manual_quit() {
 /// 給 WndProc（WM_DISPLAYCHANGE）通知主迴圈用
 #[cfg(target_os = "windows")]
 static SCREEN_PROXY: std::sync::OnceLock<Mutex<tao::event_loop::EventLoopProxy<UiCommand>>> = std::sync::OnceLock::new();
+
+/// 可點範圍：把視窗形狀裁成前端回報的矩形（寵物方框 + 顯示中的泡泡，視窗內 CSS 像素），範圍外滑鼠穿透到底下的視窗。
+/// 不能用 WS_EX_LAYERED | WS_EX_TRANSPARENT：這個視窗是 NOREDIRECTIONBITMAP（透明背景需要），
+/// 變成 layered 後畫面就停住不再更新（不論建立時或中途設定都一樣）。
+#[cfg(target_os = "windows")]
+fn set_hit_region(w: &tao::window::Window, rects: &[[f64; 4]]) {
+    use tao::platform::windows::WindowExtWindows;
+    extern "system" {
+        fn CreateRectRgn(l: i32, t: i32, r: i32, b: i32) -> isize;
+        fn CombineRgn(dst: isize, a: isize, b: isize, mode: i32) -> i32;
+        fn DeleteObject(o: isize) -> i32;
+        fn SetWindowRgn(hwnd: isize, rgn: isize, redraw: i32) -> i32;
+    }
+    let hwnd = w.hwnd() as isize;
+    if rects.is_empty() { unsafe { SetWindowRgn(hwnd, 0, 1); } return; }
+    let sf = w.scale_factor();
+    // 視窗區域以外框左上角為原點；內容區可能有看不見的邊框偏移
+    let (ox, oy) = match (w.inner_position(), w.outer_position()) {
+        (Ok(i), Ok(o)) => (i.x - o.x, i.y - o.y),
+        _ => (0, 0),
+    };
+    unsafe {
+        let rgn = CreateRectRgn(0, 0, 0, 0);
+        for r in rects {
+            let px = |v: f64| (v * sf).round() as i32;
+            let part = CreateRectRgn(ox + px(r[0]), oy + px(r[1]), ox + px(r[0] + r[2]), oy + px(r[1] + r[3]));
+            CombineRgn(rgn, rgn, part, 2); // RGN_OR
+            DeleteObject(part);
+        }
+        // 成功後區域歸系統管理，不能再刪
+        if SetWindowRgn(hwnd, rgn, 1) == 0 { DeleteObject(rgn); }
+    }
+}
 
 static IMPORTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// 桌寵視窗的 HWND：給系統對話框當擁有者，對話框才會蓋在最上層而不是只在工作列閃
