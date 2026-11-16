@@ -104,22 +104,22 @@ cd pawpeek
 
 ### GitHub Copilot（🧪 測試中）
 
-> **尚未正式支援。** 目前已發布的版本（1.3.2 以前）在 Copilot 上不會動作；以下是開發中的進度，正式支援後會更新這一節。
+> **測試中，尚未正式支援。** 1.3.3 起才支援 Copilot（1.3.2 以前在 Copilot 上不會動作），建議使用最新版（1.3.4 起寵物常駐、有 F1 面板）。以下是目前的進度，正式支援後會更新這一節。
 
-VS Code 的 Copilot 與 Copilot CLI 都能載入 Claude 格式的插件並執行裡面的 hook，所以 PawPeek 預計直接沿用同一個 repo（`bmLiao/pawpeek`），不另外發布。
+VS Code 的 Copilot 與 Copilot CLI 都能載入 Claude 格式的插件並執行裡面的 hook，所以 PawPeek 直接沿用同一個 repo（`bmLiao/pawpeek`），不另外發布。
 
 | 項目 | 狀態 |
 |------|------|
 | Copilot CLI（Windows） | ✅ 開發版實測可用：開始對話、工作中、結束都會反應，不會擋住工具呼叫；寵物常駐不會被關掉 |
 | VS Code Copilot（Windows） | ✅ 開發版實測可用（從本機資料夾載入）：開始、工作中、完成（`Stop`）、結束都會反應；需開啟 `chat.plugins.enabled`，**和 Claude Code 是各裝各的** |
-| 從 VS Code 的插件市集安裝 | ⏳ 尚未確認是否認得本 repo 的 `marketplace.json` |
+| 從 VS Code 的插件市集安裝 | ✅ 認得本 repo 的 `marketplace.json`，加入市集後可看到並安裝 PawPeek；VS Code 會沿用之前抓過的那份 repo，新版推出後要執行「Chat: Update Plugins」才會看到 |
 | 換外觀 / 讓寵物離開 | Copilot 沒有 `/set-skin`、`/skin`、`/quit` 指令（不讀 `commands/`），改用寵物的 **F1 面板** |
 | 等待確認狀態 | ⏳ 尚未確認（Copilot 的 `permissionRequest` 每次工具呼叫都會送，不能當成「等你確認」） |
 | macOS | ⏳ 尚未測試 |
 | Copilot CLI 一次性模式（`-p`） | ⚠️ 結束時有時收不到結束事件，寵物會停在工作中直到 30 分鐘逾時 |
 
-預計的安裝方式（正式支援後適用）：VS Code 設定開啟 `chat.plugins.enabled` →「Chat: Open Customizations」→ Configure Marketplaces → 加入 `bmLiao/pawpeek` → 安裝 PawPeek。
-更新：VS Code 執行「Chat: Update Plugins」（或開啟擴充功能自動更新）。在 Claude Code 跑 `/plugin update` 不會更新 VS Code 那份。
+安裝（VS Code）：設定開啟 `chat.plugins.enabled` →「Chat: Open Customizations」→ Configure Marketplaces → 加入 `bmLiao/pawpeek` → 安裝 PawPeek。
+更新：VS Code 執行「Chat: Update Plugins」（或開啟擴充功能自動更新）。看到的版本比 GitHub 上舊時，也是執行這個指令重新抓。在 Claude Code 跑 `/plugin update` 不會更新 VS Code 那份。
 
 開發測試（從本機資料夾載入）：VS Code 設定加入 `"chat.pluginLocations": { "<插件資料夾>": true }`。
 VS Code 會把插件複製到 `%APPDATA%\Code\agentPlugins\` 再執行，改了插件之後要執行「Chat: Update Plugins」或重新載入視窗，它才會重新複製。
