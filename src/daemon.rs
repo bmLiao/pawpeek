@@ -512,7 +512,8 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
     let msgs_ui = Arc::clone(&msgs);
     let proxy_import = proxy.clone();
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::WaitUntil(std::time::Instant::now() + std::time::Duration::from_millis(5));
+        // 有事件才醒來（其他執行緒的通知、視窗事件都會叫醒；輪詢執行緒每秒也會送一次狀態）
+        *control_flow = ControlFlow::Wait;
 
         let (should_exit, count) = {
             let s = state_exit.lock().unwrap_or_else(|e| e.into_inner());
@@ -520,9 +521,11 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
         };
         if should_exit && count == 0 {
             if exit_at.is_none() { exit_at = Some(std::time::Instant::now()); }
-            if exit_at.unwrap().elapsed() >= std::time::Duration::from_secs(2) {
+            let deadline = exit_at.unwrap() + std::time::Duration::from_secs(2);
+            if std::time::Instant::now() >= deadline {
                 *control_flow = ControlFlow::Exit; return;
             }
+            *control_flow = ControlFlow::WaitUntil(deadline);
         } else { exit_at = None; }
 
         match event {

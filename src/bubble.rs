@@ -107,8 +107,10 @@ pub const CSS: &str = r#"
     background: linear-gradient(100deg, #fff 45%, rgba(255,255,255,0.45) 50%, #fff 55%);
     background-size: 300% 100%; background-repeat: no-repeat;
     -webkit-background-clip: text; background-clip: text; color: transparent;
-    animation: bubble-shimmer 2.5s linear infinite;
   }
+  /* 平常不動（亮帶停在文字外，看起來是白字、不重畫）；加上 .sweep 才掃一輪。
+     顯示後 1 秒掃第一次，之後每 7 秒一輪（見 JS 的 SWEEP_*）。持續掃光每幀都要重畫，GPU 很吃 */
+  #pet-bubble .typed.shimmer.sweep { animation: bubble-shimmer 2.5s linear 1; }
   /* emoji 遇到 color: transparent 會變透明、只剩被漸層填滿的白色剪影；包成 span 給不透明顏色，保留原本彩色 */
   #pet-bubble .typed.shimmer .emoji { color: #fff; }
   @keyframes bubble-shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
@@ -153,6 +155,12 @@ pub const JS: &str = r#"
   window.setBubbleSide = function(below) { stageEl.classList.toggle('below', !!below); };
 
   var EMOJI_RE = /\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*/gu;
+  // 掃光時間：顯示後 SWEEP_FIRST_MS 掃第一次，之後每 SWEEP_EVERY_MS 一輪（一輪 2.5 秒，見 CSS）
+  var SWEEP_FIRST_MS = 1000, SWEEP_EVERY_MS = 7000, sweepTimer = null;
+  function sweep() {
+    typed.classList.remove('sweep'); void typed.offsetWidth; typed.classList.add('sweep');
+  }
+  typed.addEventListener('animationend', function() { typed.classList.remove('sweep'); });
   // 開始掃光：重排文字，emoji 包進 .emoji span（見 CSS 說明）
   function startShimmer() {
     var s = typed.textContent, last = 0, m;
@@ -165,8 +173,16 @@ pub const JS: &str = r#"
     }
     if (last < s.length) typed.appendChild(document.createTextNode(s.slice(last)));
     typed.classList.add('shimmer');
+    timer = setTimeout(function() {
+      timer = null; sweep();
+      sweepTimer = setInterval(sweep, SWEEP_EVERY_MS);
+    }, SWEEP_FIRST_MS);
   }
-  function stop() { if (timer) { clearInterval(timer); timer = null; } typed.classList.remove('shimmer'); }
+  function stop() {
+    if (timer) { clearInterval(timer); clearTimeout(timer); timer = null; }
+    if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
+    typed.classList.remove('shimmer', 'sweep');
+  }
   function splitDots(s) {
     if (/(\.\.\.|…)$/.test(s)) return { base: s.replace(/(\.\.\.|…)$/, ''), dots: true };
     return { base: s, dots: false };
