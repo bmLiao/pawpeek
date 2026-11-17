@@ -132,7 +132,7 @@ VS Code 會把插件複製到 `%APPDATA%\Code\agentPlugins\` 再執行，改了�
 | 雙擊寵物 | 顯示目前對話數與狀態 |
 | 拖曳 | 移動位置；待機時按住就會說話，並依滑鼠左右方向轉身，放開後動作播完才回待機 |
 | `[` / `]` | 縮小 / 放大（0.5x ~ 1.5x，點一下寵物後可用） |
-| F1 | 開關換外觀面板：輸入 Petdex 名稱按 Enter 換外觀、「匯入自訂外觀…」 |
+| F1 | 開關換外觀面板：輸入 Petdex 名稱按 Enter 換外觀、「📁 匯入」自訂外觀、「🌐 Petdex」（用瀏覽器開 https://petdex.dev/） |
 | F4 | 開關快捷鍵說明 |
 | Esc | 開關離開面板，按「👋 離開」讓寵物離開（下次開新對話會再出現）；F1 / F4 面板開著時是關閉它 |
 
@@ -168,13 +168,52 @@ VS Code 會把插件複製到 `%APPDATA%\Code\agentPlugins\` 再執行，改了�
 
 | 檔案 | 用途 |
 |------|------|
-| `messages.json` | 所有提示文字；陣列會隨機挑一句，`{count}`、`{name}`、`{state}` 自動帶入 |
+| `messages.json` | 所有提示文字，說明見下方〈自訂台詞〉 |
 | `.env` | `PET_SKIN=`：Petdex 名稱、本機圖片路徑，或留空用內建寵物；`UPDATE_CHECK=off` 關閉新版提醒 |
 | `pets/<名稱>/spritesheet.webp` | 下載或匯入的外觀 |
 
 視窗位置、縮放比例存在 `~/.pawpeek/data/`。
 
 外觀也會從 `~/.codex/pets/`、`~/.petdex/pets/` 讀取（與 Petdex 相容）。spritesheet 格式為 8 欄 × 9 或 11 列，png 或 webp。
+
+### 自訂台詞（`messages.json`）
+
+位置：`文件\.pawpeek\messages.json`（例如 `C:\Users\<你>\Documents\.pawpeek\messages.json`）。
+
+- 改完存檔，下次啟動桌寵就會讀入。
+- 陣列會隨機挑一句；字串可以改成陣列（反過來也可以）。刪掉某個欄位會改用內建預設值；`folder.tag` 清空就不顯示資料夾名稱。
+- 升級後，新版新增的欄位會在啟動時自動補進檔案，你改過的內容不會被蓋掉。
+- 檔案不是合法 JSON 時不會動它，桌寵改用內建預設值。
+
+| 欄位 | 用途 |
+|------|------|
+| `state_bubble` | 進入該狀態時一直顯示的台詞（`running` 工作中、`need_confirm` 等你確認、`tool_error` 工具出錯、`error_final` 執行失敗） |
+| `state_label` | 雙擊時 `{state}` 顯示的狀態名稱 |
+| `chatter` | 各狀態的自言自語（停留同一狀態時隨機說、單擊時說一句；`dragging` 是拖曳中） |
+| `done` | 工作完成回到待機時說的話 |
+| `greeting` / `goodbye` | 打招呼 / 告別 |
+| `dblclick` | 雙擊回報對話數與狀態（`idle_none` 是沒有對話時） |
+| `zoom.changed` | 用 `[` / `]` 縮放時的提示 |
+| `folder.tag` | 完成、等待確認、出錯泡泡第一行的資料夾名稱 |
+| `help` | F4 快捷鍵說明：`title` 標題、`keys` 說明表（`"按鍵": "說明"`，一行一列，可增刪） |
+| `update.available` | 有新版時的提醒 |
+| `skin` | 換外觀（`/pawpeek:set-skin`）的提示 |
+| `panel` | F1 換外觀面板、Esc 離開面板的文字 |
+| `import` | 匯入自訂外觀（`/pawpeek:skin`）的對話框 |
+
+參數寫在台詞裡會自動換成實際的值，只在列出的欄位有效：
+
+| 參數 | 意思 | 可用欄位 |
+|------|------|----------|
+| `{count}` | 目前的對話數 | `dblclick.*` |
+| `{state}` | 狀態名稱（取自 `state_label`） | `dblclick.other` |
+| `{scale}` | 縮放倍率 | `zoom.changed` |
+| `{folder}` | 對話所在的資料夾名稱 | `folder.tag` |
+| `{latest}` / `{current}` | 最新版本 / 目前版本 | `update.available` |
+| `{name}` | 外觀名稱或圖片檔名 | `skin.downloading` / `not_found` / `image_error`、`panel.not_found` / `bad_image`、`import.read_error` / `not_image` / `confirm` / `saved` |
+| `{err}` | 存檔失敗的錯誤訊息 | `panel.save_error`、`import.save_error` |
+| `{w}` / `{h}` | 圖片寬 / 高 | `import.bad_size` |
+| `{rows}` | 圖片列數 | `import.confirm` |
 
 ## 架構
 

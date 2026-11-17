@@ -80,7 +80,9 @@ fn sync_messages_file(path: &std::path::Path) {
         return;
     };
     let Ok(defaults) = serde_json::from_str::<Value>(DEFAULT_MESSAGES) else { return };
-    if fill_missing(&mut user, &defaults) {
+    let removed = remove_legacy_comment(&mut user);
+    let upgraded = upgrade_old_defaults(&mut user, &defaults);
+    if fill_missing(&mut user, &defaults) | removed | upgraded {
         if let Ok(s) = serde_json::to_string_pretty(&user) {
             let _ = std::fs::write(path, s + "\n");
         }
@@ -97,6 +99,28 @@ fn fill_missing(user: &mut Value, defaults: &Value) -> bool {
             Some(uv) => changed |= fill_missing(uv, dv),
             None => { u.insert(k.clone(), dv.clone()); changed = true; }
         }
+    }
+    changed
+}
+
+/// 舊版範本最上層有 `_說明` 註解，說明已移到 README，從使用者檔案拿掉。回傳是否有移除。
+fn remove_legacy_comment(user: &mut Value) -> bool {
+    user.as_object_mut().is_some_and(|u| u.shift_remove("_說明").is_some())
+}
+
+/// 內建預設改過文字的欄位：(路徑, 舊預設值)。使用者檔案裡還是舊預設（沒自己改過）就換成新預設；改過的不動。
+const OLD_DEFAULTS: &[(&str, &str)] = &[
+    ("panel.import", "📁 匯入自訂外觀…"),
+    ("panel.petdex", "🌐 到 Petdex 找外觀"),
+];
+
+/// 把仍是舊預設值的欄位換成新預設。回傳是否有換。
+fn upgrade_old_defaults(user: &mut Value, defaults: &Value) -> bool {
+    let mut changed = false;
+    for (path, old) in OLD_DEFAULTS {
+        let Some(new) = path.split('.').try_fold(defaults, |v, k| v.get(k)) else { continue };
+        let Some(cur) = path.split('.').try_fold(&mut *user, |v, k| v.get_mut(k)) else { continue };
+        if cur.as_str() == Some(old) && cur != new { *cur = new.clone(); changed = true; }
     }
     changed
 }
@@ -302,6 +326,25 @@ mod tests {
         assert_eq!(keys, ["greeting", "skin", "panel"]);
         // 再跑一次沒有東西要補
         assert!(!fill_missing(&mut user, &defaults));
+    }
+
+    #[test]
+    fn old_defaults_upgraded_only_if_untouched() {
+        let defaults: Value = serde_json::from_str(r#"{"panel":{"import":"📁 匯入","petdex":"🌐 Petdex"}}"#).unwrap();
+        let mut user: Value = serde_json::from_str(r#"{"panel":{"import":"📁 匯入自訂外觀…","petdex":"我自己改的"}}"#).unwrap();
+        assert!(upgrade_old_defaults(&mut user, &defaults));
+        assert_eq!(user["panel"]["import"], "📁 匯入");
+        assert_eq!(user["panel"]["petdex"], "我自己改的");
+        assert!(!upgrade_old_defaults(&mut user, &defaults));
+    }
+
+    #[test]
+    fn legacy_comment_removed() {
+        let mut user: Value = serde_json::from_str(r#"{"_說明":"舊說明","done":["我的"]}"#).unwrap();
+        assert!(remove_legacy_comment(&mut user));
+        assert!(user.get("_說明").is_none());
+        assert_eq!(user["done"][0], "我的");
+        assert!(!remove_legacy_comment(&mut user));
     }
 
     #[test]

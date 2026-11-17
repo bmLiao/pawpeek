@@ -225,7 +225,14 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
     // 泡泡展開狀態：(沒有泡泡時的視窗大小（實體像素）, 泡泡是否在寵物下方)
     let frame_state: std::cell::Cell<Option<((i32, i32), bool)>> = std::cell::Cell::new(None);
 
-    let webview = WebViewBuilder::new()
+    let webview_builder = WebViewBuilder::new();
+    // 關閉瀏覽器快捷鍵（F5 / Ctrl+R 重新整理、Ctrl+F 尋找、Ctrl+P 列印等），複製貼上不受影響
+    #[cfg(target_os = "windows")]
+    let webview_builder = {
+        use wry::WebViewBuilderExtWindows;
+        webview_builder.with_browser_accelerator_keys(false)
+    };
+    let webview = webview_builder
         .with_transparent(true)
         // 預設會在建立後把鍵盤焦點移進 WebView2，連帶把視窗帶到前景
         .with_focused(false)
@@ -303,6 +310,10 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                 }
                 if v.get("type").and_then(|t| t.as_str()) == Some("importSkin") {
                     let _ = proxy_ipc.send_event(UiCommand::ImportSkin);
+                }
+                // F1 面板的「到 Petdex 找外觀」：用預設瀏覽器開網站
+                if v.get("type").and_then(|t| t.as_str()) == Some("openPetdex") {
+                    open_petdex();
                 }
                 // F1 面板的「讓寵物離開」：和 /pawpeek:quit 相同，下次新對話開始才會再出現
                 if v.get("type").and_then(|t| t.as_str()) == Some("quit") {
@@ -780,6 +791,17 @@ impl raw_window_handle::HasDisplayHandle for PetParent {
 #[cfg(target_os = "windows")]
 fn pet_parent() -> Option<PetParent> {
     std::num::NonZeroIsize::new(PET_HWND.load(std::sync::atomic::Ordering::SeqCst)).map(PetParent)
+}
+
+/// Petdex 網站（F1 面板的按鈕）
+const PETDEX_URL: &str = "https://petdex.dev/";
+
+/// 用預設瀏覽器開 Petdex 網站
+fn open_petdex() {
+    #[cfg(target_os = "windows")]
+    { let _ = std::process::Command::new("explorer.exe").arg(PETDEX_URL).spawn(); }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = std::process::Command::new("xdg-open").arg(PETDEX_URL).spawn(); }
 }
 
 macro_rules! with_parent {

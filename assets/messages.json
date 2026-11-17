@@ -1,5 +1,4 @@
 {
-  "_說明": "PawPeek 提示文字。改完存檔，下次啟動桌寵就會讀入。陣列會隨機挑一句；{count}、{name}、{state} 會自動帶入。刪掉某個欄位會改用內建預設值。 chatter：各狀態的自言自語（停留同一狀態時隨機說、單擊時說一句；dragging 是拖曳中）； state_bubble：進入該狀態時一直顯示的台詞；done：工作完成回到待機時說的話。",
   "state_bubble": {
     "running": "🐾 交給我吧，我會努力趕工的！",
     "need_confirm": "🙋 欸，這邊需要你確認一下喔",
@@ -118,8 +117,16 @@
     "tag": "📁 {folder}"
   },
   "help": {
-    "title": "⌨️ 快捷鍵",
-    "text": "單擊：說一句話\n雙擊：對話數與狀態\n拖曳：移動位置\n[ / ]：縮小 / 放大\nF1：換外觀\nF4：快捷鍵說明\nEsc：讓寵物離開\n（先點一下寵物，按鍵才有作用；同一個鍵再按一次關閉）"
+    "title": "⌨️ 說明",
+    "keys": {
+      "單擊": "說一句話",
+      "雙擊": "對話數與狀態",
+      "拖曳": "移動位置",
+      "[ / ]": "縮小 / 放大",
+      "F1": "換外觀",
+      "F4": "快捷鍵說明",
+      "Esc": "讓寵物離開"
+    }
   },
   "update": {
     "available": "✨ 有新版 {latest} 囉（目前 {current}）！\nClaude Code：/plugin update pawpeek@pawpeek\nVS Code Copilot：執行「Chat: Update Plugins」"
@@ -134,7 +141,8 @@
   },
   "panel": {
     "placeholder": "Petdex 寵物名稱，按 Enter",
-    "import": "📁 匯入自訂外觀…",
+    "import": "📁 匯入",
+    "petdex": "🌐 Petdex",
     "quit_title": "要讓我先離開嗎？",
     "quit": "👋 離開",
     "quit_hint": "讓寵物離開（下次開新對話時會再出現）",

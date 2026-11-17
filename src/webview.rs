@@ -42,6 +42,9 @@ pub fn build_page(messages_js: &str, saved_scale: f64) -> String {
   .pp-panel .row + .row, .pp-panel .row + .text {{ margin-top: 6px; }}
   .pp-panel .title {{ flex: 1; min-width: 0; font-weight: 700; padding-left: 2px; }}
   .pp-panel .text {{ white-space: pre-line; padding: 0 2px; color: rgba(255, 255, 255, 0.88); }}
+  .pp-panel .keys {{ margin-top: 6px; border-collapse: collapse; width: 100%; color: rgba(255, 255, 255, 0.88); }}
+  .pp-panel .keys td {{ padding: 1px 2px; vertical-align: top; }}
+  .pp-panel .keys td:first-child {{ white-space: nowrap; padding-right: 10px; font-weight: 700; color: #fff; }}
   .pp-panel input, .pp-panel button {{
     box-sizing: border-box; height: 26px; border-radius: 7px; font: inherit; color: #fff; outline: none;
     border: 1px solid rgba(255, 255, 255, 0.16); background: rgba(255, 255, 255, 0.08);
@@ -51,11 +54,11 @@ pub fn build_page(messages_js: &str, saved_scale: f64) -> String {
   .pp-panel input::placeholder {{ color: rgba(255, 255, 255, 0.45); }}
   .pp-panel button {{ padding: 0 10px; cursor: pointer !important; }}
   .pp-panel button:hover {{ background: rgba(255, 255, 255, 0.18); }}
-  #skin-import, #pet-quit {{ flex: 1; }}
+  #skin-import, #skin-petdex, #pet-quit {{ flex: 1; }}
 </style>
 </head>
 <body>
-<div class="stage"><div id="skin-panel" class="pp-panel"><div class="row"><input id="skin-input" type="text" spellcheck="false" autocomplete="off"></div><div class="row"><button id="skin-import"></button></div></div><div id="help-panel" class="pp-panel"><div class="row"><span id="help-title" class="title"></span></div><div id="help-text" class="text"></div></div><div id="quit-panel" class="pp-panel"><div class="row"><span id="quit-title" class="title"></span></div><div class="row"><button id="pet-quit"></button></div></div><div class="pet" id="pet" data-state="idle"><canvas id="pet-canvas" width="192" height="208" style="display:block;width:100%;height:100%;pointer-events:none;image-rendering:pixelated"></canvas></div></div>
+<div class="stage"><div id="skin-panel" class="pp-panel"><div class="row"><input id="skin-input" type="text" spellcheck="false" autocomplete="off"></div><div class="row"><button id="skin-petdex"></button><button id="skin-import"></button></div></div><div id="help-panel" class="pp-panel"><div class="row"><span id="help-title" class="title"></span></div><table id="help-keys" class="keys"></table></div><div id="quit-panel" class="pp-panel"><div class="row"><span id="quit-title" class="title"></span></div><div class="row"><button id="pet-quit"></button></div></div><div class="pet" id="pet" data-state="idle"><canvas id="pet-canvas" width="192" height="208" style="display:block;width:100%;height:100%;pointer-events:none;image-rendering:pixelated"></canvas></div></div>
 {demo_label}
 <script>
 var COLS = 8, ROWS = 9;
@@ -220,8 +223,16 @@ function setText(id, group, key) {{ document.getElementById(id).textContent = M(
 function setTitle(id, group, key) {{ document.getElementById(id).title = M(group, key); }}
 skinInput.placeholder = M('panel', 'placeholder');
 setText('skin-import', 'panel', 'import');
+setText('skin-petdex', 'panel', 'petdex');
 setText('help-title', 'help', 'title');
-setText('help-text', 'help', 'text');
+// 快捷鍵說明表：messages.json 的 help.keys（按鍵 → 說明，依檔案順序）
+(function() {{
+  var keys = (MSG.help && MSG.help.keys) || {{}}, table = document.getElementById('help-keys');
+  Object.keys(keys).forEach(function(k) {{
+    var tr = table.insertRow(), a = tr.insertCell(), b = tr.insertCell();
+    a.textContent = k; b.textContent = String(keys[k]);
+  }});
+}})();
 setText('quit-title', 'panel', 'quit_title');
 setText('pet-quit', 'panel', 'quit');
 setTitle('pet-quit', 'panel', 'quit_hint');
@@ -250,6 +261,11 @@ document.getElementById('skin-import').addEventListener('click', function() {{
   window.ipc.postMessage(JSON.stringify({{type:'importSkin'}}));
   closePanel();
 }});
+// 用預設瀏覽器開 Petdex 網站（網址固定在主程式，不從前端帶）
+document.getElementById('skin-petdex').addEventListener('click', function() {{
+  window.ipc.postMessage(JSON.stringify({{type:'openPetdex'}}));
+  closePanel();
+}});
 // 讓寵物離開：和 /pawpeek:quit 相同（下次開新對話才會再出現）；Copilot 沒有指令，靠這個關
 document.getElementById('pet-quit').addEventListener('click', function() {{
   closePanel();
@@ -261,6 +277,8 @@ document.getElementById('pet-quit').addEventListener('click', function() {{
 document.addEventListener('keydown', function(e) {{
   dbg('按鍵 ' + e.key + '（目標 ' + (e.target.id || e.target.tagName) + '）');
   if (e.isComposing || e.keyCode === 229) return; // 輸入法選字中（Esc 是取消選字）
+  // 重新整理會讓寵物狀態歸零：舊版 WebView2 關不掉瀏覽器快捷鍵時在這裡擋
+  if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))) {{ e.preventDefault(); return; }}
   if (e.key === 'F1') {{ e.preventDefault(); window.togglePanel('skin'); return; }}
   if (e.key === 'F4') {{ e.preventDefault(); window.togglePanel('help'); return; }}
   if (e.key === 'Escape') {{
