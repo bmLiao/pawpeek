@@ -523,6 +523,11 @@ document.addEventListener('click', function(e) {
 });
 function singleClick() {
   if (clickBusy) return;
+  // 等你確認：點一下清掉這則提示（主程式換下一則或回到其他狀態），不說話；其他狀態照常說一句
+  if (mode === 'waiting') {
+    window.ipc.postMessage(JSON.stringify({type:'dismissConfirm'}));
+    return;
+  }
   var m = (mode === 'dragging' || !mode) ? 'idle' : mode;
   if (!speech.say(pickMsg(chatterPool(m)), CHATTER_MS)) return; // 特殊狀態期間不說
   if (m === 'idle') {

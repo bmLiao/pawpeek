@@ -112,6 +112,13 @@ hook 事件的對應在 `src/hook.rs`，多對話合併在 `src/state.rs`，前�
 | 嚴重錯誤 | `failed` | `StopFailure`（認證、帳單、模型、invalid_request 等） | `failed` | `error_final` |
 
 - 多對話時取最高優先：`等待確認 > 嚴重錯誤 > 工具出錯 > 工作中 > 待機`。
+- **等待確認怎麼解除**（那個對話）：
+  - 選選項 / 允許：工具有結果時解除（`PostToolUse`，或對話紀錄先寫入工具結果）→ 工作中。允許後工具跑很久時，跑完才解除（按允許的當下 Claude Code 不送事件）。
+  - 按 Esc 取消：Claude Code **不送任何事件**，只在對話紀錄（hook 的 `transcript_path`）寫入 `[Request interrupted by user…]`。等待確認時每秒檢查新增的內容，看到就 → 待機（`StateMachine::poll_transcripts`）。沒有 `transcript_path` 的 agent（Copilot）不偵測。
+  - 送出新訊息（`UserPromptSubmit`）、其他任何事件、`SessionEnd`：照一般對應。
+  - 點一下寵物：清掉目前這則提示，見下方「待確認名單」。
+- **待確認名單**：每個要求確認的對話依先後排隊，泡泡只顯示**最早那一個**（資料夾名稱見 §3.1.1）；它解除後換下一個，重新說一次 `need_confirm`；名單空了才回到其他狀態。已在等的對話再送一次確認事件（例如 `PermissionRequest` 後又來 `Notification`）不改順序。
+  - 點一下寵物（等待確認時）：那個對話回到確認前的狀態（通常是工作中），換下一則。仍繼續看它的對話紀錄，之後按 Esc 會轉成待機。
 - 工作中 / 等待確認 / 工具出錯超過 30 分鐘沒有任何事件，自動回到待機（`STALE_TIMEOUT`）；嚴重錯誤保留到下一次操作。
 - 對話結束：收到 `SessionEnd`，或（Windows）執行 hook 的 agent 程序已經結束（每 5 秒檢查，見下方 Copilot 一節）。
 - **只在程式關掉才離開**（Windows）：對話結束不等於離開。寵物記下每個對話的 agent 程序（Claude Code CLI 是 `claude.exe`、VS Code Copilot 是 `copilot-runtime.exe`、Copilot CLI 是 `node.exe`），**沒有對話、而且這些程式都關掉了**才告別、離開（`StateMachine::update_exit`、`lingering`）。
@@ -203,7 +210,8 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 多個對話（例如 VS Code 與終端機各開一個）同時在跑時，用來分辨是哪個專案完成或在等你。
 
 - 來源：hook 資料的 `cwd`，取最後一層資料夾名稱（`C:\work\pawpeek` → `pawpeek`）。每個對話各自記住（`src/state.rs` `folder_name`）。
-- **哪個對話**：合併狀態改變的那一刻決定（`StateMachine::update_current_state`）：
+- **等待確認**：一律顯示待確認名單的第一個（§1.1），換下一則時跟著換、重新顯示。
+- **其他狀態（哪個對話）**：合併狀態改變的那一刻決定（`StateMachine::update_current_state`）：
   1. 觸發這次事件的對話正處於新狀態 → 用它（例如 B 要求確認 → B）。
   2. 否則處於新狀態的對話只有一個 → 用那個（例如 B 完成後回到工作中，工作中的是 A → A）。
   3. 都分不出來（例如逾時一起回到待機、好幾個對話同狀態）或沒有 `cwd` → 不顯示。
@@ -226,7 +234,8 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 
 | 操作 | 條件 | 說什麼 | 動作 |
 |------|------|-------|------|
-| 單擊 | 任何狀態；放開後 250ms 內沒有第二下才算單擊（避免雙擊時先冒出單擊台詞）；特殊泡泡顯示中不說 | `chatter.<目前狀態>` 隨機一句（拖曳中視為待機），暫時 4 秒 | 待機時隨機 `waving` / `jumping` / `waiting` / `review` 2 秒，期間不接受下一次單擊 |
+| 單擊（等你確認時） | 放開後 250ms 內沒有第二下 | 不說；清掉目前這則待確認提示，換下一則或回到其他狀態（§1.1 待確認名單） | 無 |
+| 單擊 | 等你確認以外的狀態；放開後 250ms 內沒有第二下才算單擊（避免雙擊時先冒出單擊台詞）；特殊泡泡顯示中不說 | `chatter.<目前狀態>` 隨機一句（拖曳中視為待機），暫時 4 秒 | 待機時隨機 `waving` / `jumping` / `waiting` / `review` 2 秒，期間不接受下一次單擊 |
 | 雙擊 | 任何狀態；會取消等待中的單擊；特殊泡泡顯示中不說 | `dblclick.<狀態>`（對話數與狀態），暫時 3 秒 | 無 |
 | `[` / `]` 縮放 | 點過寵物取得焦點後；在 F1 面板輸入框打字時不算 | `zoom.changed`，特殊 1.5 秒 | 無 |
 | F1 | 點過寵物取得焦點後 | 不說；開關換外觀面板，見 §3.5 | 無 |
@@ -371,6 +380,7 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 
 | 日期 | 變更 |
 |------|------|
+| 2026-11-17 | §1.1 新增待確認名單：多個對話等確認時依先後顯示，解除一個換下一個（§3.1.1 等待確認改為顯示名單第一個）；按 Esc 取消確認時 Claude Code 不送事件，改看對話紀錄的「被使用者中斷」轉成待機；§3.3 等你確認時單擊改為清掉這則提示（其他狀態不變） |
 | 2026-11-17 | §3.5 F1 換外觀面板新增「🌐 Petdex」按鈕，用預設瀏覽器開 https://petdex.dev/，和「📁 匯入」並排一行（Petdex 在左）（`panel.import` 從「📁 匯入自訂外觀…」改短，仍是舊預設的使用者檔案會自動換新）；新增 `panel.petdex` |
 | 2026-11-17 | §3.5 F4 快捷鍵說明改成兩欄表格，內容來自 `messages.json` 的 `help.keys`（按鍵 → 說明）；`help.text` 不再使用 |
 | 2026-11-17 | §3.3 關閉 WebView2 瀏覽器快捷鍵（F5 / Ctrl+R 重新整理、Ctrl+F、Ctrl+P 等），前端也擋 F5 / Ctrl+R（舊版 WebView2 備援） |

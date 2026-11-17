@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// 工作中 / 等待確認 / 工具出錯超過這段時間沒有任何事件，視為對話已失聯（例如終端機被直接關掉、
@@ -44,12 +45,66 @@ struct Session {
     agent: Option<(u32, Option<u64>)>,
     /// 工作資料夾的名稱（hook 的 `cwd` 最後一層）
     folder: Option<String>,
+    /// 進入等待確認的順序（待確認名單依這個排，先來的先顯示）；不在等待確認時為 None
+    confirm_seq: Option<u64>,
+    /// 進入等待確認前的狀態（點寵物清掉提示時回到這個狀態）
+    before_confirm: LightState,
+    /// 等待確認時監看的對話紀錄（hook 的 `transcript_path`）與已讀到的位置。
+    /// 按 Esc 取消確認時 Claude Code 不送任何事件，只會在紀錄寫入「被使用者中斷」，靠這個偵測。
+    watch: Option<(PathBuf, u64)>,
 }
 
 impl Session {
     fn new() -> Self {
-        Session { state: LightState::Idle, last_event: Instant::now(), agent: None, folder: None }
+        Session {
+            state: LightState::Idle, last_event: Instant::now(), agent: None, folder: None,
+            confirm_seq: None, before_confirm: LightState::Running, watch: None,
+        }
     }
+}
+
+/// 對話紀錄新增的內容裡看到什麼（見 `scan_transcript`）
+#[derive(Debug, PartialEq, Eq)]
+enum TranscriptSignal {
+    /// 使用者中斷（例如確認框按 Esc）
+    Interrupted,
+    /// 工具有結果了（確認後執行完、選了選項）
+    ToolResult,
+}
+
+/// 掃描對話紀錄（JSONL）新增的幾行：有「被使用者中斷」優先，其次是工具結果
+fn scan_transcript(chunk: &str) -> Option<TranscriptSignal> {
+    let mut found = None;
+    for line in chunk.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v.get("type").and_then(|t| t.as_str()) != Some("user") { continue; }
+        let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else { continue };
+        for c in content {
+            match c.get("type").and_then(|t| t.as_str()) {
+                Some("text") if c.get("text").and_then(|t| t.as_str())
+                    .is_some_and(|t| t.starts_with("[Request interrupted by user")) => found = Some(TranscriptSignal::Interrupted),
+                Some("tool_result") if found.is_none() => found = Some(TranscriptSignal::ToolResult),
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// 讀檔案從 `offset` 開始新增的完整行；回傳 (內容, 新的 offset)。檔案變短或讀不到回傳 None
+fn read_new_lines(path: &std::path::Path, offset: u64) -> Option<(String, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let len = std::fs::metadata(path).ok()?.len();
+    if len < offset { return None; }
+    if len == offset { return Some((String::new(), offset)); }
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(offset)).ok()?;
+    let mut buf = Vec::new();
+    f.take(len - offset).read_to_end(&mut buf).ok()?;
+    // 只處理到最後一個換行（最後一行可能還沒寫完）
+    let end = buf.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+    buf.truncate(end);
+    Some((String::from_utf8_lossy(&buf).into_owned(), offset + end as u64))
 }
 
 /// 從工作資料夾路徑取出最後一層名稱（`C:\Users\me\pawpeek` → `pawpeek`）；取不到回傳 None
@@ -66,6 +121,10 @@ pub struct StateMachine {
     current_state: LightState,
     /// 造成目前狀態的對話的資料夾名稱（合併狀態改變時更新；分不出是哪個對話時為 None）
     current_folder: Option<String>,
+    /// 等待確認時，目前顯示的是哪個對話的提示（待確認名單的第一個）
+    current_confirm: Option<String>,
+    /// 下一個進入等待確認的順序號碼
+    confirm_counter: u64,
     /// 對話已結束、但程式（agent 程序）還開著的 agent：(PID, 啟動時間)。
     /// 寵物只在程式關掉才離開，所以這些 agent 還在時就算沒有對話也留著（見 `end_dead_agents`）
     lingering: Vec<(u32, Option<u64>)>,
@@ -79,9 +138,16 @@ impl StateMachine {
             session_counter: 0,
             current_state: LightState::Idle,
             current_folder: None,
+            current_confirm: None,
+            confirm_counter: 0,
             lingering: Vec::new(),
             should_exit: false,
         }
+    }
+
+    /// 等待確認時，目前顯示提示的對話（換成下一則時會變，前端要重新顯示）
+    pub fn current_confirm(&self) -> Option<String> {
+        self.current_confirm.clone()
     }
 
     pub fn current_state(&self) -> LightState {
@@ -102,11 +168,16 @@ impl StateMachine {
     }
 
     pub fn handle_event(&mut self, session_id: &str, event: &str) {
-        self.handle_event_in(session_id, event, None);
+        self.handle_event_in(session_id, event, None, None);
     }
 
-    /// 同 `handle_event`，並記下這個對話的工作資料夾（hook 的 `cwd`）
-    pub fn handle_event_in(&mut self, session_id: &str, event: &str, cwd: Option<&str>) {
+    /// 同 `handle_event`，並記下這個對話的工作資料夾（hook 的 `cwd`）；
+    /// 進入等待確認時開始監看對話紀錄（`transcript`，偵測 Esc 取消）
+    pub fn handle_event_in(&mut self, session_id: &str, event: &str, cwd: Option<&str>, transcript: Option<&str>) {
+        // 這個對話有任何其他事件 → 不再需要監看紀錄
+        if event != "need_confirm" {
+            if let Some(s) = self.sessions.get_mut(session_id) { s.watch = None; }
+        }
         match event {
             "session_start" => {
                 let is_new = !self.sessions.contains_key(session_id);
@@ -140,6 +211,7 @@ impl StateMachine {
                     session.last_event = Instant::now();
                     if !matches!(session.state, LightState::ErrorFinal) {
                         session.state = LightState::Idle;
+                        session.confirm_seq = None;
                     }
                 }
             }
@@ -156,7 +228,50 @@ impl StateMachine {
         if let (Some(s), Some(name)) = (self.sessions.get_mut(session_id), cwd.and_then(folder_name)) {
             s.folder = Some(name);
         }
+        if event == "need_confirm" {
+            if let (Some(s), Some(path)) = (self.sessions.get_mut(session_id), transcript) {
+                if s.watch.is_none() {
+                    let path = PathBuf::from(path);
+                    if let Ok(m) = std::fs::metadata(&path) { s.watch = Some((path, m.len())); }
+                }
+            }
+        }
         self.update_current_state(Some(session_id));
+    }
+
+    /// 點寵物清掉目前顯示的待確認提示：那個對話回到確認前的狀態，換下一則（沒有就回到其他狀態）。
+    /// 仍繼續監看它的對話紀錄（之後按 Esc 會轉成待機）。回傳是否有清掉。
+    pub fn dismiss_confirm(&mut self) -> bool {
+        let Some(id) = self.current_confirm.clone() else { return false };
+        let Some(s) = self.sessions.get_mut(&id) else { return false };
+        if s.state != LightState::NeedConfirm { return false; }
+        s.state = s.before_confirm;
+        s.confirm_seq = None;
+        self.update_current_state(None);
+        true
+    }
+
+    /// 檢查等待確認中（或剛被點掉提示）的對話紀錄：看到使用者中斷 → 待機；看到工具結果 → 工作中。
+    /// 回傳是否有對話狀態改變。
+    pub fn poll_transcripts(&mut self) -> bool {
+        let mut changed = false;
+        for s in self.sessions.values_mut() {
+            let Some((path, offset)) = s.watch.as_mut() else { continue };
+            let Some((chunk, next)) = read_new_lines(path, *offset) else { s.watch = None; continue };
+            *offset = next;
+            let Some(signal) = scan_transcript(&chunk) else { continue };
+            s.watch = None;
+            match signal {
+                TranscriptSignal::Interrupted if s.state != LightState::ErrorFinal => s.state = LightState::Idle,
+                TranscriptSignal::ToolResult if s.state == LightState::NeedConfirm => s.state = LightState::Running,
+                _ => continue,
+            }
+            s.confirm_seq = None;
+            s.last_event = Instant::now();
+            changed = true;
+        }
+        if changed { self.update_current_state(None); }
+        changed
     }
 
     fn set_session_state(&mut self, session_id: &str, state: LightState) {
@@ -167,9 +282,20 @@ impl StateMachine {
             self.session_counter += 1;
             self.should_exit = false;
         }
+        let seq = self.confirm_counter;
         let session = self.sessions
             .entry(session_id.to_string())
             .or_insert_with(Session::new);
+        // 進入等待確認：排進待確認名單（已在等就維持原本的順序）
+        if state == LightState::NeedConfirm {
+            if session.state != LightState::NeedConfirm {
+                session.before_confirm = session.state;
+                session.confirm_seq = Some(seq);
+                self.confirm_counter += 1;
+            }
+        } else {
+            session.confirm_seq = None;
+        }
         session.state = state;
         session.last_event = Instant::now();
     }
@@ -221,6 +347,8 @@ impl StateMachine {
             );
             if active && now.saturating_duration_since(session.last_event) >= timeout {
                 session.state = LightState::Idle;
+                session.confirm_seq = None;
+                session.watch = None;
                 changed = true;
             }
         }
@@ -247,6 +375,17 @@ impl StateMachine {
             });
             self.current_folder = holder.and_then(|s| s.folder.clone());
         }
+        // 等待確認：一律顯示待確認名單的第一個（最早要求確認的對話），它被處理掉就換下一個
+        self.current_confirm = None;
+        if new == LightState::NeedConfirm {
+            if let Some((id, s)) = self.sessions.iter()
+                .filter(|(_, s)| s.state == LightState::NeedConfirm)
+                .min_by_key(|(_, s)| s.confirm_seq.unwrap_or(u64::MAX))
+            {
+                self.current_confirm = Some(id.clone());
+                self.current_folder = s.folder.clone();
+            }
+        }
         self.current_state = new;
     }
 
@@ -257,6 +396,7 @@ impl StateMachine {
         self.should_exit = false;
         self.current_state = LightState::Idle;
         self.current_folder = None;
+        self.current_confirm = None;
         self.lingering.clear();
     }
 }
@@ -457,11 +597,11 @@ mod tests {
     #[test]
     fn folder_follows_the_session_that_changed_state() {
         let mut sm = StateMachine::new();
-        sm.handle_event_in("a", "running", Some(r"C:\work\alpha"));
-        sm.handle_event_in("b", "running", Some(r"C:\work\beta"));
+        sm.handle_event_in("a", "running", Some(r"C:\work\alpha"), None);
+        sm.handle_event_in("b", "running", Some(r"C:\work\beta"), None);
         assert_eq!(sm.current_folder().as_deref(), Some("alpha")); // 第一個讓狀態變成工作中的
         // b 要求確認 → 等待確認，是 b 造成的
-        sm.handle_event_in("b", "need_confirm", None);
+        sm.handle_event_in("b", "need_confirm", None, None);
         assert_eq!(sm.current_state(), LightState::NeedConfirm);
         assert_eq!(sm.current_folder().as_deref(), Some("beta"));
         // b 完成 → 回到工作中，但工作中的是 a（不是觸發的 b）
@@ -477,8 +617,8 @@ mod tests {
     #[test]
     fn folder_unknown_when_ambiguous_or_missing() {
         let mut sm = StateMachine::new();
-        sm.handle_event_in("a", "running", Some(r"C:\work\alpha"));
-        sm.handle_event_in("b", "running", Some(r"C:\work\beta"));
+        sm.handle_event_in("a", "running", Some(r"C:\work\alpha"), None);
+        sm.handle_event_in("b", "running", Some(r"C:\work\beta"), None);
         sm.handle_event("a", "stop");
         // 逾時一起回到待機：兩個對話都在待機，分不出是誰
         assert!(sm.expire_stale(Instant::now() + STALE_TIMEOUT, STALE_TIMEOUT));
@@ -501,5 +641,79 @@ mod tests {
         sm.handle_event("s2", "session_end");
         assert_eq!(sm.session_count(), 0);
         assert!(sm.should_exit());
+    }
+
+    #[test]
+    fn confirm_queue_shows_next_in_order() {
+        let mut sm = StateMachine::new();
+        sm.handle_event_in("a", "running", Some(r"C:\work\alpha"), None);
+        sm.handle_event_in("b", "running", Some(r"C:\work\beta"), None);
+        sm.handle_event("a", "need_confirm");
+        sm.handle_event("b", "need_confirm");
+        // 先來的先顯示；b 後到不搶
+        assert_eq!(sm.current_confirm().as_deref(), Some("a"));
+        assert_eq!(sm.current_folder().as_deref(), Some("alpha"));
+        // a 又送一次（Notification）不改順序
+        sm.handle_event("a", "need_confirm");
+        assert_eq!(sm.current_confirm().as_deref(), Some("a"));
+        // a 有動靜 → 換 b，狀態仍是等待確認
+        sm.handle_event("a", "running");
+        assert_eq!(sm.current_state(), LightState::NeedConfirm);
+        assert_eq!(sm.current_confirm().as_deref(), Some("b"));
+        assert_eq!(sm.current_folder().as_deref(), Some("beta"));
+        sm.handle_event("b", "stop");
+        assert_eq!(sm.current_state(), LightState::Running);
+        assert_eq!(sm.current_confirm(), None);
+    }
+
+    #[test]
+    fn dismiss_confirm_goes_to_next_then_previous_state() {
+        let mut sm = StateMachine::new();
+        sm.handle_event_in("a", "running", Some(r"C:\work\alpha"), None);
+        sm.handle_event_in("b", "running", Some(r"C:\work\beta"), None);
+        sm.handle_event("a", "need_confirm");
+        sm.handle_event("b", "need_confirm");
+        assert!(sm.dismiss_confirm());
+        assert_eq!(sm.current_confirm().as_deref(), Some("b"));
+        assert!(sm.dismiss_confirm());
+        // 都清掉 → 回到確認前的工作中
+        assert_eq!(sm.current_state(), LightState::Running);
+        assert!(!sm.dismiss_confirm());
+    }
+
+    #[test]
+    fn transcript_esc_or_result_resolves_confirm() {
+        let dir = std::env::temp_dir().join(format!("pawpeek-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let t = dir.join("t.jsonl");
+        std::fs::write(&t, "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"old\"}]}}\n").unwrap();
+        let tp = t.to_str().unwrap();
+        let mut sm = StateMachine::new();
+        sm.handle_event("a", "running");
+        sm.handle_event_in("a", "need_confirm", None, Some(tp));
+        // 舊內容不算；沒有新內容不變
+        assert!(!sm.poll_transcripts());
+        assert_eq!(sm.current_state(), LightState::NeedConfirm);
+        // 按 Esc：寫入中斷 → 待機
+        let esc = "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"The user doesn't want to proceed\"}]}}\n\
+                   {\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"[Request interrupted by user for tool use]\"}]}}\n";
+        use std::io::Write;
+        std::fs::OpenOptions::new().append(true).open(&t).unwrap().write_all(esc.as_bytes()).unwrap();
+        assert!(sm.poll_transcripts());
+        assert_eq!(sm.current_state(), LightState::Idle);
+
+        // 選了選項：工具結果 → 工作中
+        sm.handle_event_in("a", "need_confirm", None, Some(tp));
+        std::fs::OpenOptions::new().append(true).open(&t).unwrap()
+            .write_all(b"{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}}\n").unwrap();
+        assert!(sm.poll_transcripts());
+        assert_eq!(sm.current_state(), LightState::Running);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn transcript_ignores_partial_line_and_assistant_text() {
+        assert_eq!(scan_transcript("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"[Request interrupted by user\"}]}}"), None);
+        assert_eq!(scan_transcript("{\"type\":\"user\",\"message\":{\"content\":\"plain\"}}"), None);
     }
 }

@@ -16,7 +16,8 @@ const FIXED_PORT: u16 = 47390;
 #[derive(Debug, Clone)]
 pub enum UiCommand {
     /// 合併狀態，以及造成這個狀態的對話的資料夾名稱（分不出來為 None）
-    SetState(LightState, Option<String>),
+    /// (狀態, 資料夾名稱, 等待確認時顯示的是哪個對話——換成下一則時要重新顯示)
+    SetState(LightState, Option<String>, Option<String>),
     /// 換上新的 spritesheet（例如 Petdex 下載完成）
     SetSprite(Vec<u8>),
     /// 外部指令：匯入自訂外觀（`pawpeek --import-skin`）
@@ -222,6 +223,7 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
     // WebView: IPC handler moves window directly, no EventLoop roundtrip
     let drag_win = win_arc.clone();
     let proxy_ipc = proxy.clone();
+    let state_ipc = Arc::clone(&state);
     // 泡泡展開狀態：(沒有泡泡時的視窗大小（實體像素）, 泡泡是否在寵物下方)
     let frame_state: std::cell::Cell<Option<((i32, i32), bool)>> = std::cell::Cell::new(None);
 
@@ -310,6 +312,14 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                 }
                 if v.get("type").and_then(|t| t.as_str()) == Some("importSkin") {
                     let _ = proxy_ipc.send_event(UiCommand::ImportSkin);
+                }
+                // 等待確認時點寵物：清掉目前這則提示，換下一則（下一次輪詢就會通知前端）
+                if v.get("type").and_then(|t| t.as_str()) == Some("dismissConfirm") {
+                    let mut s = state_ipc.lock().unwrap_or_else(|e| e.into_inner());
+                    if s.dismiss_confirm() {
+                        debug_note("點寵物清掉待確認提示");
+                        let _ = proxy_ipc.send_event(UiCommand::SetState(s.current_state(), s.current_folder(), s.current_confirm()));
+                    }
                 }
                 // F1 面板的「到 Petdex 找外觀」：用預設瀏覽器開網站
                 if v.get("type").and_then(|t| t.as_str()) == Some("openPetdex") {
@@ -462,7 +472,7 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
             tick += 1;
-            let (cur, folder, count, exiting) = {
+            let (cur, folder, confirm, count, exiting) = {
                 let mut s = state_poll.lock().unwrap_or_else(|e| e.into_inner());
                 // 每分鐘檢查一次失聯的對話（終端機被直接關掉時不會送 SessionEnd）
                 if tick % 60 == 0 {
@@ -473,9 +483,11 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
                     let n = s.end_dead_agents(crate::agent::is_alive);
                     if n > 0 { debug_note(&format!("agent 已結束，結束 {n} 個對話")); }
                 }
-                (s.current_state(), s.current_folder(), s.session_count(), s.should_exit())
+                // 等待確認中的對話：看紀錄有沒有按 Esc 取消（Claude Code 不會送事件）
+                if s.poll_transcripts() { debug_note("對話紀錄：確認已取消或已處理"); }
+                (s.current_state(), s.current_folder(), s.current_confirm(), s.session_count(), s.should_exit())
             };
-            let _ = proxy_poll.send_event(UiCommand::SetState(cur, folder));
+            let _ = proxy_poll.send_event(UiCommand::SetState(cur, folder, confirm));
             let _ = proxy_poll.send_event(UiCommand::SessionCount(count));
 
             // 打招呼：對話數變多（待機中）；告別：要離開了（沒有對話、程式也都關掉，見 StateMachine::update_exit）
@@ -493,6 +505,7 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
 
     // Event loop
     let mut last_state: Option<LightState> = None;
+    let mut last_confirm: Option<String> = None;
     let mut exit_at: Option<std::time::Instant> = None;
     let state_exit = Arc::clone(&state);
     let webview = Some(webview);
@@ -514,10 +527,12 @@ pub fn run_daemon(port: u16) -> Result<(), String> {
 
         match event {
             Event::UserEvent(cmd) => match cmd {
-                UiCommand::SetState(state, folder) => {
-                    if last_state == Some(state) { return; }
+                UiCommand::SetState(state, folder, confirm) => {
+                    // 同狀態不重播；但等待確認換成下一則（另一個對話）時要重新顯示
+                    if last_state == Some(state) && last_confirm == confirm { return; }
                     let prev = last_state.map(state_name);
                     last_state = Some(state);
+                    last_confirm = confirm;
                     // 動畫與說話（進入狀態那一句、持久台詞、自言自語、資料夾名稱）都由前端依狀態處理
                     if let Some(ref wv) = webview {
                         let prev_js = prev.map(|p| format!("'{p}'")).unwrap_or_else(|| "null".into());
