@@ -195,6 +195,7 @@ VS Code 會把插件複製到 `%APPDATA%\Code\agentPlugins\` 再執行，改了�
 | `greeting` / `goodbye` | 打招呼 / 告別 |
 | `dblclick` | 雙擊回報對話數與狀態（`idle_none` 是沒有對話時） |
 | `zoom.changed` | 用 `[` / `]` 縮放時的提示 |
+| `minis` | F3 小寵物登場（`on`）/ 退場（`off`）時說的話 |
 | `folder.tag` | 完成、等待確認、出錯泡泡第一行的資料夾名稱 |
 | `help` | F4 快捷鍵說明：`title` 標題、`keys` 說明表（`"按鍵": "說明"`，一行一列，可增刪） |
 | `update.available` | 有新版時的提醒 |

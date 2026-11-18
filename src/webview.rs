@@ -396,6 +396,8 @@ window.toggleMinis = function() {
     placeMinis();
     if (miniFollow) minisMainFrame(curFrame.c, curFrame.r); else minisFree();
   } else minis.forEach(miniStop);
+  // 登場 / 退場說一句（暫時台詞：特殊泡泡顯示中不說）
+  speech.say(pickMsg((MSG.minis || {})[on ? 'on' : 'off']), 3000);
   dbg('小寵物 ' + (on ? '開 ' + miniShape : '關'));
   reportHitRects();
 };
