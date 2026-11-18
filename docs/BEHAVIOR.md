@@ -121,11 +121,11 @@ hook 事件的對應在 `src/hook.rs`，多對話合併在 `src/state.rs`，前�
 - **待確認名單**：每個要求確認的對話依先後排隊，泡泡只顯示**最早那一個**（資料夾名稱見 §3.1.1）；它解除後換下一個，重新說一次 `need_confirm`；名單空了才回到其他狀態。已在等的對話再送一次確認事件（例如 `PermissionRequest` 後又來 `Notification`）不改順序。
   - 點一下寵物（等待確認時）：那個對話回到確認前的狀態（通常是工作中），換下一則。仍繼續看它的對話紀錄，之後按 Esc 會轉成待機。
 - 工作中 / 等待確認 / 工具出錯超過 30 分鐘沒有任何事件，自動回到待機（`STALE_TIMEOUT`）；嚴重錯誤保留到下一次操作。
-- 對話結束：收到 `SessionEnd`，或（Windows）執行 hook 的 agent 程序已經結束（每 5 秒檢查，見下方 Copilot 一節）。
-- **只在程式關掉才離開**（Windows）：對話結束不等於離開。寵物記下每個對話的 agent 程序（Claude Code CLI 是 `claude.exe`、VS Code Copilot 是 `copilot-runtime.exe`、Copilot CLI 是 `node.exe`），**沒有對話、而且這些程式都關掉了**才告別、離開（`StateMachine::update_exit`、`lingering`）。
+- 對話結束：收到 `SessionEnd`，或（Windows / macOS）執行 hook 的 agent 程序已經結束（每 5 秒檢查，見下方 Copilot 一節）。
+- **只在程式關掉才離開**（Windows / macOS）：對話結束不等於離開。寵物記下每個對話的 agent 程序（Claude Code CLI 是 `claude.exe`（macOS 為 `claude` 或 `node`）、VS Code Copilot 是 `copilot-runtime.exe`、Copilot CLI 是 `node.exe`），**沒有對話、而且這些程式都關掉了**才告別、離開（`StateMachine::update_exit`、`lingering`）。
   - 例：VS Code 開新聊天（舊聊天送 `SessionEnd`）→ 不離開；關掉 VS Code → 5 秒內離開。
   - 例：Claude Code CLI 打 `/exit` 或一次性模式（`-p`）跑完 → `claude.exe` 本身結束，算程式關掉 → 離開。
-  - 找不到 agent 的對話（非 Windows、程序鏈斷掉）結束時，維持「對話數變 0 就離開」。
+  - 找不到 agent 的對話（Windows / macOS / Linux 以外、程序鏈斷掉）結束時，維持「對話數變 0 就離開」。
   - 手動離開：Esc 面板的「👋 離開」或 `/pawpeek:quit`。
 
 #### GitHub Copilot（🧪 測試中，尚未正式支援）
@@ -143,7 +143,7 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 | `SessionEnd` | 相容 | 結束（告別） | VS Code：開新聊天時會對被取代的舊聊天送出 |
 
 - VS Code Copilot（從本機資料夾載入插件實測）：`SessionStart` → `UserPromptSubmit` → `PreToolUse` / `permissionRequest` / `PostToolUse` → `Stop`，完成時會回到待機，動作切換與 Claude Code 相同。
-- **agent 結束就當作對話結束**（Windows）：hook 會附上執行它的 agent 程序 PID（往上跳過 powershell、cmd、bash 等殼層，例如 `claude.exe`、VS Code 的 `copilot-runtime.exe`、Copilot CLI 的 `node.exe`）。桌寵記下 PID 與啟動時間，**每 5 秒檢查一次**，程序不在了就把它的對話當作收到 `SessionEnd`；已經沒有對話、只剩程式開著的 agent 也一起檢查，全部關掉才告別、離開（見上方「只在程式關掉才離開」）。關掉 VS Code 或終端機時常常不會送 `SessionEnd`，靠這個收尾。見 `src/agent.rs`、`StateMachine::end_dead_agents`。
+- **agent 結束就當作對話結束**（Windows / macOS）：hook 會附上執行它的 agent 程序 PID（往上跳過 powershell、cmd、sh、bash、zsh 等殼層，例如 `claude.exe`、VS Code 的 `copilot-runtime.exe`、Copilot CLI 的 `node.exe`；macOS 用 `ps` 查程序表與啟動時間、`kill(pid, 0)` 判斷是否還在）。桌寵記下 PID 與啟動時間，**每 5 秒檢查一次**，程序不在了就把它的對話當作收到 `SessionEnd`；已經沒有對話、只剩程式開著的 agent 也一起檢查，全部關掉才告別、離開（見上方「只在程式關掉才離開」）。關掉 VS Code 或終端機時常常不會送 `SessionEnd`，靠這個收尾。見 `src/agent.rs`、`StateMachine::end_dead_agents`。
 - **結束事件不啟動桌寵**：桌寵沒在跑時收到 `SessionEnd`，hook 直接忽略（沒在跑就代表沒有要結束的對話）。否則會為了轉交結束事件把桌寵叫起來，它發現沒有對話又馬上離開，多閃一次。見 `src/main.rs` `read_stdin_and_send`。
 
 - hook 指令：Claude Code 用 `command`（sh 啟動器），Copilot 在 Windows 用 `powershell` 欄位直接執行 `pawpeek.exe`；Copilot 不支援 `args`。
@@ -395,6 +395,7 @@ VS Code Copilot 與 Copilot CLI 會載入同一份 `hooks/hooks.json`（Claude �
 
 | 日期 | 變更 |
 |------|------|
+| 2026-11-18 | macOS：補上「agent 程式關掉就結束對話 / 離開」偵測（原本只有 Windows）；F1 面板的 Petdex 按鈕改用 `open` 開瀏覽器；macOS 執行檔改為 universal（支援 Intel Mac） |
 | 2026-11-18 | §3.6 F3 打開 / 關閉小寵物時說一句登場 / 退場台詞（暫時 3 秒）；新增 `minis.on` / `minis.off` |
 | 2026-11-18 | 新增 §3.6 F3 小寵物：右下角三隻同皮膚小寵物（疊在寵物上方，三角形排列 ▲ / ▼ 輪流、稍微重疊）；主體待機時各自動作（主體小動作時三隻各換不同動作），其他狀態跟主體一致；不說話；§4.1 視窗形狀加入小寵物；`help.keys` 新增 `F3` |
 | 2026-11-17 | §2.1 掃光從持續循環改為打完字 1 秒後掃第一次、之後每 7 秒一輪（降低 CPU / GPU 用量）；主程式事件迴圈改成有事件才醒（原本每 5ms 醒一次） |

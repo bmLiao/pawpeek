@@ -25,7 +25,7 @@ Claude Code 會把它複製到 `~/.claude/plugins/cache/pawpeek/pawpeek/<版本>
 |------|------|
 | `bin/pawpeek` | sh 啟動器，依 `uname` 轉交給下面兩個執行檔；hooks 與斜線指令都呼叫它 |
 | `bin/pawpeek.exe` | Windows 執行檔（CI 編譯後自動 commit） |
-| `bin/pawpeek-macos` | macOS arm64 執行檔（CI 編譯後自動 commit） |
+| `bin/pawpeek-macos` | macOS universal 執行檔（arm64 + x86_64）（CI 編譯後自動 commit） |
 | `bin/VERSION` | 已部署執行檔的版本號（CI 自動寫入）；桌寵啟動時讀一次，比自己新就提醒使用者更新 |
 
 注意：在 Git Bash 裡 `bin/pawpeek` 會被當成 `bin/pawpeek.exe`，用 shell 寫入 `bin/pawpeek` 會覆蓋掉 exe，要改啟動器請用編輯器。

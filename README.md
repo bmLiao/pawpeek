@@ -35,7 +35,7 @@
 
 ## 安裝
 
-需求：Windows 10/11（WebView2 Runtime，Win11 內建）或 macOS（Apple Silicon），以及 [Claude Code](https://docs.claude.com/en/docs/claude-code)。
+需求：Windows 10/11（WebView2 Runtime，Win11 內建）或 macOS（Apple Silicon / Intel），以及 [Claude Code](https://docs.claude.com/en/docs/claude-code)。
 
 ### 方式一：直接從 GitHub 安裝（建議，免 clone、免編譯）
 

@@ -818,7 +818,9 @@ const PETDEX_URL: &str = "https://petdex.dev/";
 fn open_petdex() {
     #[cfg(target_os = "windows")]
     { let _ = std::process::Command::new("explorer.exe").arg(PETDEX_URL).spawn(); }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    { let _ = std::process::Command::new("open").arg(PETDEX_URL).spawn(); }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     { let _ = std::process::Command::new("xdg-open").arg(PETDEX_URL).spawn(); }
 }
 
