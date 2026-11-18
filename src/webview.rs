@@ -24,6 +24,12 @@ pub fn build_page(messages_js: &str, saved_scale: f64) -> String {
     cursor: grab;
   }}
   .pet.dragging {{ cursor: grabbing; }}
+  /* F3 小寵物：放在 .pet 裡（跟著縮放），疊在寵物右下角上方；位置由 JS 每次打開時隨機（%，相對寵物方框） */
+  .pet {{ position: relative; }}
+  #minis {{ display: none; position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }}
+  body.minis #minis {{ display: block; }}
+  #minis canvas {{ position: absolute; width: 28%; height: 28%; image-rendering: pixelated; pointer-events: none; }}
+  #pet-bubble, .pp-panel {{ position: relative; z-index: 2; }}
   ::-webkit-scrollbar {{ display: none; }}
 {bubble_css}
   /* 面板（F1 換外觀、F4 快捷鍵說明、Esc 離開）：放在泡泡的位置（寵物上方，靠近螢幕頂端時在下方），
@@ -58,7 +64,7 @@ pub fn build_page(messages_js: &str, saved_scale: f64) -> String {
 </style>
 </head>
 <body>
-<div class="stage"><div id="skin-panel" class="pp-panel"><div class="row"><input id="skin-input" type="text" spellcheck="false" autocomplete="off"></div><div class="row"><button id="skin-petdex"></button><button id="skin-import"></button></div></div><div id="help-panel" class="pp-panel"><div class="row"><span id="help-title" class="title"></span></div><table id="help-keys" class="keys"></table></div><div id="quit-panel" class="pp-panel"><div class="row"><span id="quit-title" class="title"></span></div><div class="row"><button id="pet-quit"></button></div></div><div class="pet" id="pet" data-state="idle"><canvas id="pet-canvas" width="192" height="208" style="display:block;width:100%;height:100%;pointer-events:none;image-rendering:pixelated"></canvas></div></div>
+<div class="stage"><div id="skin-panel" class="pp-panel"><div class="row"><input id="skin-input" type="text" spellcheck="false" autocomplete="off"></div><div class="row"><button id="skin-petdex"></button><button id="skin-import"></button></div></div><div id="help-panel" class="pp-panel"><div class="row"><span id="help-title" class="title"></span></div><table id="help-keys" class="keys"></table></div><div id="quit-panel" class="pp-panel"><div class="row"><span id="quit-title" class="title"></span></div><div class="row"><button id="pet-quit"></button></div></div><div class="pet" id="pet" data-state="idle"><canvas id="pet-canvas" width="192" height="208" style="display:block;width:100%;height:100%;pointer-events:none;image-rendering:pixelated"></canvas><div id="minis"><canvas width="192" height="208"></canvas><canvas width="192" height="208"></canvas><canvas width="192" height="208"></canvas></div></div></div>
 {demo_label}
 <script>
 var COLS = 8, ROWS = 9;
@@ -105,12 +111,17 @@ var petCanvas = document.getElementById('pet-canvas');
 var petCtx = petCanvas.getContext('2d');
 var spriteImg = null, cellW = 192, cellH = 208;
 var curFrame = {{ c: 0, r: 0 }};
+function drawCell(ctx, cv, c, r) {{
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(spriteImg, c * cellW, r * cellH, cellW, cellH, 0, 0, cv.width, cv.height);
+}}
 function showFrame(c, r) {{
   curFrame = {{ c: c, r: r }};
   if (!spriteImg) return;
-  petCtx.clearRect(0, 0, petCanvas.width, petCanvas.height);
-  petCtx.drawImage(spriteImg, c * cellW, r * cellH, cellW, cellH, 0, 0, petCanvas.width, petCanvas.height);
+  drawCell(petCtx, petCanvas, c, r);
+  minisMainFrame(c, r);
 }}
+{minis_js}
 // 依圖片高度判斷列數：舊版 9 列（1536×1872）、新版 11 列（1536×2288，多 2 列看向方向）
 // 格子固定 192×208，用寬度推算格高，與圖片實際解析度無關
 window.loadSprite = function(url) {{
@@ -280,6 +291,7 @@ document.addEventListener('keydown', function(e) {{
   // 重新整理會讓寵物狀態歸零：舊版 WebView2 關不掉瀏覽器快捷鍵時在這裡擋
   if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))) {{ e.preventDefault(); return; }}
   if (e.key === 'F1') {{ e.preventDefault(); window.togglePanel('skin'); return; }}
+  if (e.key === 'F3') {{ e.preventDefault(); window.toggleMinis(); return; }}
   if (e.key === 'F4') {{ e.preventDefault(); window.togglePanel('help'); return; }}
   if (e.key === 'Escape') {{
     e.preventDefault();
@@ -304,9 +316,90 @@ document.addEventListener('keydown', function(e) {{
 
 </script>
 </body></html>"#, messages_js=messages_js, saved_scale=saved_scale,
-        bubble_css=crate::bubble::CSS, bubble_js=crate::bubble::JS, controller_js=CONTROLLER_JS, demo_label=demo_label,
+        bubble_css=crate::bubble::CSS, bubble_js=crate::bubble::JS, controller_js=CONTROLLER_JS, minis_js=MINIS_JS, demo_label=demo_label,
         pet_debug=cfg!(debug_assertions))
 }
+
+/// F3 小寵物（docs/BEHAVIOR.md §3.6）。需要頁面先定義 `STATES`、`buildFrames`、`drawCell`、`spriteImg`、`curFrame`、`dbg`；
+/// 對外：`minisMainFrame(c, r)`（主體每格呼叫）、`toggleMinis()`、`setMinisFollow(on)`、`minisAction(ms)`
+const MINIS_JS: &str = r#"
+var miniCanvases = Array.from(document.querySelectorAll('#minis canvas'));
+var minis = miniCanvases.map(function(cv) { return { cv: cv, ctx: cv.getContext('2d'), timer: null, actTimer: null }; });
+var miniFollow = false;   // true：主體在特定狀態（待機以外），三隻畫和主體同一格
+var MINI_ACTIONS = ['jumping', 'waving', 'review', 'waiting'];
+var miniShape = null;     // 上次的排列（'up' ▲ / 'down' ▼），下次換另一種
+function minisOn() { return document.body.classList.contains('minis'); }
+function minisMainFrame(c, r) {
+  if (!minisOn() || !miniFollow || !spriteImg) return;
+  minis.forEach(function(m) { drawCell(m.ctx, m.cv, c, r); });
+}
+function miniStop(m) { clearTimeout(m.timer); m.timer = null; clearTimeout(m.actTimer); m.actTimer = null; }
+// 各自播放：從隨機一格開始，三隻不同步
+function miniPlay(m, state) {
+  clearTimeout(m.timer); m.timer = null;
+  var frames = buildFrames(STATES[state] || STATES.idle);
+  var i = Math.floor(Math.random() * frames.length);
+  function draw() { if (spriteImg) drawCell(m.ctx, m.cv, frames[i].c, frames[i].r); }
+  draw();
+  if (frames.length < 2) return;
+  (function tick() {
+    m.timer = setTimeout(function() { i = (i + 1) % frames.length; draw(); tick(); }, frames[i].d);
+  })();
+}
+function miniAct(m, action, ms) {
+  miniPlay(m, action);
+  clearTimeout(m.actTimer);
+  m.actTimer = setTimeout(function() { m.actTimer = null; if (!miniFollow) miniPlay(m, 'idle'); }, ms);
+}
+function shuffled(a) {
+  a = a.slice();
+  for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)), t = a[i]; a[i] = a[j]; a[j] = t; }
+  return a;
+}
+function minisFree() { minis.forEach(function(m) { miniStop(m); miniPlay(m, 'idle'); }); }
+// 主體換狀態（enterMode）：待機各自動，其他狀態跟主體一致
+window.setMinisFollow = function(on) {
+  miniFollow = !!on;
+  if (!minisOn()) return;
+  if (miniFollow) { minis.forEach(miniStop); minisMainFrame(curFrame.c, curFrame.r); } else minisFree();
+};
+// 主體待機時做小動作（自言自語、單擊）：三隻各換一個不同的動作，同樣長度
+window.minisAction = function(ms) {
+  if (!minisOn() || miniFollow) return;
+  var acts = shuffled(MINI_ACTIONS);
+  minis.forEach(function(m, i) { miniAct(m, acts[i % acts.length], ms); });
+};
+// 待機時偶爾自己做個小動作（每 4 秒每隻 15%，2～4 秒）
+setInterval(function() {
+  if (!minisOn() || miniFollow) return;
+  minis.forEach(function(m) {
+    if (!m.actTimer && Math.random() < 0.15) miniAct(m, MINI_ACTIONS[Math.floor(Math.random() * MINI_ACTIONS.length)], 2000 + Math.random() * 2000);
+  });
+}, 4000);
+// 站位：寵物右下角排成三角形，▲ / ▼ 輪流（第一次隨機）；同排中心距 32%、上下排差 14%（寬 28%，上下排斜向稍微重疊）；各 ±4% 隨機；下排疊在前面
+function placeMinis() {
+  miniShape = miniShape === 'up' ? 'down' : miniShape === 'down' ? 'up' : (Math.random() < 0.5 ? 'up' : 'down');
+  var CX = 83, DX = 16, HI = 64, LO = 78, W = 28;
+  var spots = miniShape === 'up' ? [[CX, HI], [CX - DX, LO], [CX + DX, LO]] : [[CX - DX, HI], [CX + DX, HI], [CX, LO]];
+  function j() { return Math.random() * 8 - 4; }
+  spots.forEach(function(p, i) {
+    var cv = miniCanvases[i];
+    cv.style.left = (p[0] - W / 2 + j()) + '%';
+    cv.style.top = (p[1] + j()) + '%';
+    cv.style.zIndex = p[1] === LO ? 2 : 1;
+  });
+}
+window.toggleMinis = function() {
+  var on = !minisOn();
+  document.body.classList.toggle('minis', on);
+  if (on) {
+    placeMinis();
+    if (miniFollow) minisMainFrame(curFrame.c, curFrame.r); else minisFree();
+  } else minis.forEach(miniStop);
+  dbg('小寵物 ' + (on ? '開 ' + miniShape : '關'));
+  reportHitRects();
+};
+"#;
 
 /// 狀態與說話的控制（拖曳、單擊、雙擊、自言自語、更新提醒）。規則見 docs/BEHAVIOR.md，改動時一併更新。
 /// 需要頁面先定義 `MSG`、`pickMsg`、`fmt`、`M`、`play`、`afterCycle`、`stateLabel`、`pet`，以及 bubble.rs 的 `speech`。
@@ -331,7 +424,11 @@ var dragDir = 0, dragAccX = 0, DRAG_DIR_PX = 6;
 
 function chatterPool(s) { var c = MSG.chatter || {}; return c[s] || []; }
 function modeAnim() { return ANIM[mode] || 'idle'; }
-function setFlip(on) { petCanvas.style.transform = on ? 'scaleX(-1)' : ''; }
+function setFlip(on) {
+  var t = on ? 'scaleX(-1)' : '';
+  petCanvas.style.transform = t;
+  miniCanvases.forEach(function(cv) { cv.style.transform = t; }); // 小寵物各自翻轉（站位不鏡像）
+}
 // 拖曳中依滑鼠水平移動翻轉：同方向累積超過 DRAG_DIR_PX 才換（避免手抖左右閃），停下來保持最後方向
 function trackDragDir(dx) {
   if (mode !== 'dragging' || !dx) return;
@@ -346,6 +443,7 @@ function trackDragDir(dx) {
 // 短暫動作（自言自語、單擊），結束後回到目前狀態的動畫
 function playAction(a, ms) {
   play(a);
+  window.minisAction(ms); // 小寵物各自換不同的動作（§3.6）
   clearTimeout(actionTimer);
   actionTimer = setTimeout(function() { actionTimer = null; play(modeAnim()); }, ms);
 }
@@ -365,6 +463,7 @@ function enterMode(m, entry, folder) {
   mode = m; modeSince = Date.now(); lastChatter = modeSince;
   dragDir = 0; dragAccX = 0; setFlip(false);
   clearTimeout(actionTimer); actionTimer = null;
+  window.setMinisFollow(m !== 'idle'); // 小寵物：待機各自動，其他狀態跟主體一致（§3.6）
   play(modeAnim());
   var base = m === 'dragging' ? pickMsg(chatterPool('dragging'))
            : m === 'idle' ? '' : M('state_bubble', STATE_BUBBLE[m]);
@@ -474,6 +573,11 @@ function reportHitRects() {
     var q = b.getBoundingClientRect(), P = 9; // 含尾巴與陰影
     rects.push([q.left - P, q.top - P, q.width + P * 2, q.height + P * 2]);
   }
+  // F3 小寵物超出寵物方框的部分也要算進視窗形狀才畫得出來（同時也是可點 / 可拖曳範圍）
+  if (minisOn()) miniCanvases.forEach(function(cv) {
+    var m = cv.getBoundingClientRect();
+    rects.push([m.left, m.top, m.width, m.height]);
+  });
   document.querySelectorAll('.pp-panel').forEach(function(sp) {
     if (!sp.offsetWidth) return;
     var s = sp.getBoundingClientRect(), S = 4; // 含陰影
