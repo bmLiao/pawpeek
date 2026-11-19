@@ -6,6 +6,8 @@ pub fn build_page(messages_js: &str, saved_scale: f64) -> String {
         // 外框與泡泡相同（底色、圓角、陰影），位置由 CONTROLLER_JS 放到寵物方框內的底部
         r#"<div id="demo-label" style="position:fixed;transform:translateX(-50%);box-sizing:border-box;padding:3px 12px;border-radius:999px;background:rgba(22,24,38,0.92);color:#fff;border:1px solid rgba(255,255,255,0.10);font:700 12px/1.4 'Segoe UI','Microsoft JhengHei UI',system-ui,sans-serif;letter-spacing:1px;box-shadow:0 4px 14px rgba(0,0,0,0.32),0 1px 3px rgba(0,0,0,0.2);pointer-events:none;white-space:nowrap;z-index:5">DEMO</div>"#.to_string()
     } else { String::new() };
+    // F4 面板右上角的版本號（docs/BEHAVIOR.md §3.5）
+    let version = env!("CARGO_PKG_VERSION");
     format!(r#"<!DOCTYPE html>
 <html>
 <head>
@@ -47,6 +49,7 @@ pub fn build_page(messages_js: &str, saved_scale: f64) -> String {
   .pp-panel .row {{ display: flex; gap: 6px; align-items: center; }}
   .pp-panel .row + .row, .pp-panel .row + .text {{ margin-top: 6px; }}
   .pp-panel .title {{ flex: 1; min-width: 0; font-weight: 700; padding-left: 2px; }}
+  .pp-panel .ver {{ flex: none; font-size: 11px; color: rgba(255, 255, 255, 0.5); padding-right: 2px; }}
   .pp-panel .text {{ white-space: pre-line; padding: 0 2px; color: rgba(255, 255, 255, 0.88); }}
   .pp-panel .keys {{ margin-top: 6px; border-collapse: collapse; width: 100%; color: rgba(255, 255, 255, 0.88); }}
   .pp-panel .keys td {{ padding: 1px 2px; vertical-align: top; }}
@@ -64,7 +67,7 @@ pub fn build_page(messages_js: &str, saved_scale: f64) -> String {
 </style>
 </head>
 <body>
-<div class="stage"><div id="skin-panel" class="pp-panel"><div class="row"><input id="skin-input" type="text" spellcheck="false" autocomplete="off"></div><div class="row"><button id="skin-petdex"></button><button id="skin-import"></button></div></div><div id="help-panel" class="pp-panel"><div class="row"><span id="help-title" class="title"></span></div><table id="help-keys" class="keys"></table></div><div id="quit-panel" class="pp-panel"><div class="row"><span id="quit-title" class="title"></span></div><div class="row"><button id="pet-quit"></button></div></div><div class="pet" id="pet" data-state="idle"><canvas id="pet-canvas" width="192" height="208" style="display:block;width:100%;height:100%;pointer-events:none;image-rendering:pixelated"></canvas><div id="minis"><canvas width="192" height="208"></canvas><canvas width="192" height="208"></canvas><canvas width="192" height="208"></canvas></div></div></div>
+<div class="stage"><div id="skin-panel" class="pp-panel"><div class="row"><input id="skin-input" type="text" spellcheck="false" autocomplete="off"></div><div class="row"><button id="skin-petdex"></button><button id="skin-import"></button></div></div><div id="help-panel" class="pp-panel"><div class="row"><span id="help-title" class="title"></span><span id="help-ver" class="ver">v{version}</span></div><table id="help-keys" class="keys"></table></div><div id="quit-panel" class="pp-panel"><div class="row"><span id="quit-title" class="title"></span></div><div class="row"><button id="pet-quit"></button></div></div><div class="pet" id="pet" data-state="idle"><canvas id="pet-canvas" width="192" height="208" style="display:block;width:100%;height:100%;pointer-events:none;image-rendering:pixelated"></canvas><div id="minis"><canvas width="192" height="208"></canvas><canvas width="192" height="208"></canvas><canvas width="192" height="208"></canvas></div></div></div>
 {demo_label}
 <script>
 var COLS = 8, ROWS = 9;
